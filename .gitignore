@@ -33,3 +33,6 @@ src/main/resources/static
 .expo
 .vscode
 /doc/
+
+# WorkBuddy 本地工作区数据，不入库
+.workbuddy/
