@@ -20,6 +20,8 @@ public class AEMobile {
 
     public static boolean useSSL;
 
+    public static boolean useWebUI;
+
     @SidedProxy(clientSide= Tags.GROUPNAME + ".ClientProxy", serverSide=Tags.GROUPNAME + ".CommonProxy")
     public static CommonProxy proxy;
 
@@ -34,6 +36,7 @@ public class AEMobile {
         privkey = config.get("ssl", "private-key", "/etc/letsencrypt/xxx-01/server.key",
                 "put your absolute path of SSL private key here").getString();
         useSSL = config.get("ssl", "enabled", false, "Enable SSL, is required for Apple users to use this app").getBoolean();
+        useWebUI = config.get("web", "enableWebUI", false, "Enable the built-in browser WebUI (static pages + /icons). When false only the app API (/AE2/*, /api/*, /AEMobileTest) is served").getBoolean();
         config.save();
         proxy.preInit(event);
     }

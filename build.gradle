@@ -627,3 +627,8 @@ def checkPropertyExists(String propertyName) {
 def getFile(String relativePath) {
     return new File(projectDir, relativePath)
 }
+
+// 源码为 UTF-8（含中文注释），显式指定编译编码，避免依赖平台默认字符集
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

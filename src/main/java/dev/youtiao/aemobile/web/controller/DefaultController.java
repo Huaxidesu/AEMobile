@@ -1,10 +1,12 @@
 package dev.youtiao.aemobile.web.controller;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 
+@RestController
 public class DefaultController {
-    @GetMapping("/")
-    public String index() {
-        return "index";
+    @GetMapping("/AEMobileTest")
+    public String aemobileTest() {
+        return "<h1>hello world</h1>";
     }
 }

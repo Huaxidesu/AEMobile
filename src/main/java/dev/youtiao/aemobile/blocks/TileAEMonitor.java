@@ -684,6 +684,7 @@ public class TileAEMonitor extends TileEntity {
                             new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()),
                             aeItemStack,
                             request.allowMissing ? CraftingMode.IGNORE_MISSING : CraftingMode.STANDARD,
+                            false, // liteMode=false: 走完整 CraftingJobV2 计算
                             null);
                 } else {
                     jobFuture = finalCg.beginCraftingJob(
