@@ -26,7 +26,9 @@ public class WebApplication extends Thread implements ApplicationContextAware {
         HashMap<String, Object> hm = new HashMap<>();
         hm.put("server.port", "44444");
         hm.put("server.compression.enabled", "true");
-        hm.put("server.compression.mime-types", "text/html,text/css,application/javascript,application/json");
+        // text/event-stream 必须显式列上，否则 SSE 不压缩：物品列表一帧 ~80KB JSON，gzip 后 ~14KB
+        hm.put("server.compression.mime-types", "text/html,text/css,application/javascript,application/json,text/event-stream");
+        hm.put("server.compression.min-response-size", "1024");
         hm.put("spring.mvc.async.request-timeout", "1800000");
         app.setDefaultProperties(hm);
             app.run(WebApplication.class, new String[]{});
