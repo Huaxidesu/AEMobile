@@ -2,7 +2,7 @@
     {
       "modid": "${modId}",
       "name": "${modName}",
-      "description": "A mod that provides the ability of monitoring AE network, and submitting craft tasks with http protocol",
+      "description": "A mod that provides the ability of monitoring AE network, and submitting craft tasks over a custom TCP protocol",
       "version": "${modVersion}",
       "mcversion": "${minecraftVersion}",
       "url": "https://github.com/koiNoCirculation/AEMobile",
