@@ -19,6 +19,7 @@ import appeng.crafting.v2.CraftingJobV2;
 import appeng.me.GridAccessException;
 import appeng.me.cache.CraftingGridCache;
 import appeng.me.cluster.implementations.CraftingCPUCluster;
+import appeng.me.helpers.AENetworkProxy;
 import appeng.me.helpers.IGridProxyable;
 import appeng.util.item.AEFluidStack;
 import appeng.util.item.AEItemStack;
@@ -26,6 +27,7 @@ import appeng.util.item.IAEStackList;
 import appeng.util.item.ItemList;
 import com.google.common.collect.ImmutableList;
 import com.mojang.authlib.GameProfile;
+import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.util.FakePlayerGetCraftFailure;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -556,6 +558,7 @@ public class TileAEMonitor extends TileEntity {
                         i[0]++;
                         return craftingCPUInfo;
                     }).collect(Collectors.toList());
+                    if (list.isEmpty()) logCpuDiagnosis(((IGridProxyable) tileEntity).getProxy());
                     return Response.ofSuccess(list);
                 } catch (GridAccessException e) {
                     return Response.ofError(e.getMessage());
@@ -566,6 +569,61 @@ public class TileAEMonitor extends TileEntity {
         });
         tasks.add(ft);
         return ft.get();
+    }
+
+    /**
+     * 只诊断、不改行为：cpusOnce 返回 0 台时，把「为什么 0 台」写进服务器日志。
+     *
+     * GTNH 版 AE2 的 CraftingGridCache.getCpus() 用 ActiveCpuIterator 过滤过：
+     * 只返回「多方块已成型 && 节点已激活（有电）&& 在这张网里」的 CPU。
+     * 所以 App 看到 0 台可能是：CPU 在别的子网 / 没成型 / 没电，三者日志能区分。
+     */
+    private void logCpuDiagnosis(AENetworkProxy proxy) {
+        try {
+            int nodes = proxy.getGrid().getNodes().size();
+            boolean powered = proxy.getEnergy().isNetworkPowered();
+            int total = 0, active = 0, destroyed = 0;
+            java.lang.reflect.Field f = CraftingGridCache.class.getDeclaredField("craftingCPUClusters");
+            f.setAccessible(true);
+            Object raw = f.get(proxy.getCrafting());
+            if (raw instanceof Collection) {
+                for (Object o : (Collection<?>) raw) {
+                    if (!(o instanceof CraftingCPUCluster)) continue;
+                    CraftingCPUCluster c = (CraftingCPUCluster) o;
+                    total++;
+                    if (c.isActive()) active++;
+                    if (c.isDestroyed()) destroyed++;
+                }
+            }
+            AEMobile.info("[AEMobile] cpusOnce 返回 0 台 → 网格节点 " + nodes + "，网络有电=" + powered
+                    + "，本网络 CPU 簇 " + total + " 个（激活 " + active + "，已销毁 " + destroyed + "）"
+                    + "，各类机器数：" + machineCounts(proxy.getGrid()));
+        } catch (Throwable t) {
+            AEMobile.info("[AEMobile] cpusOnce 返回 0 台（诊断失败：" + t + "）");
+        }
+    }
+
+    /** 诊断用：统计这张网里各类 AE 方块有多少（判断 CPU 墙到底有没有加载/接上） */
+    private String machineCounts(appeng.api.networking.IGrid grid) {
+        StringBuilder sb = new StringBuilder();
+        Class<?>[] classes = {
+                appeng.tile.crafting.TileCraftingTile.class,
+                appeng.tile.crafting.TileCraftingMonitorTile.class,
+                appeng.tile.crafting.TileCraftingStorageTile.class,
+                appeng.tile.storage.TileDrive.class,
+                appeng.tile.networking.TileController.class,
+                appeng.tile.networking.TileCableBus.class,
+        };
+        for (Class<?> c : classes) {
+            try {
+                @SuppressWarnings("unchecked")
+                Class<? extends appeng.api.networking.IGridHost> gh = (Class<? extends appeng.api.networking.IGridHost>) c;
+                sb.append(c.getSimpleName()).append('=').append(grid.getMachines(gh).size()).append(' ');
+            } catch (Throwable ignored) {
+                sb.append(c.getSimpleName()).append("=? ");
+            }
+        }
+        return sb.toString().trim();
     }
 
     public Response<CraftPlan> populatePlan(CraftingJobV2 iCraftingJob) {
