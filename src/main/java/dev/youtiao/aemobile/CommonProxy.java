@@ -8,7 +8,7 @@ import cpw.mods.fml.common.registry.GameData;
 import cpw.mods.fml.common.registry.GameRegistry;
 import dev.youtiao.aemobile.blocks.BlockAEMonitor;
 import dev.youtiao.aemobile.blocks.TileAEMonitor;
-import dev.youtiao.aemobile.web.WebApplication;
+import dev.youtiao.aemobile.net.TcpServer;
 import net.minecraft.block.Block;
 import net.minecraft.block.material.Material;
 import net.minecraft.creativetab.CreativeTabs;
@@ -52,7 +52,7 @@ public class CommonProxy {
                         Item.itemRegistry.getObject("appliedenergistics2:item.ItemBasicStorageCell.16k")
                         ,'#',Item.itemRegistry.getObject("appliedenergistics2:tile.BlockFluix")}
         );
-        FMLCommonHandler.instance().bus().register(new MSPTListener());
+        // MSPT 监听已移除（2026-10-27）：MSPT 监控整体砍掉，/api/serverMSPT 由以后的服务端插件提供
     }
 
     public void serverAboutToStart(FMLServerAboutToStartEvent event) {
@@ -65,13 +65,15 @@ public class CommonProxy {
     }
 
     public void serverStarted(FMLServerStartedEvent event) {
-        WebApplication webApplication = new WebApplication();
-        webApplication.setDaemon(false);
-        webApplication.start();
+        // 协议 3.0.0：不再起 Spring/Tomcat，直接开 TCP 监听（端口见 config 的 [server] port）
+        // 启动前先从 playerdata 恢复 token 表和监控器坐标表：
+        // 不这么做的话，重启后没人走到监控器附近时 App 会误报「密码错误」。
+        dev.youtiao.aemobile.net.MonitorRegistry.loadFromPlayerData();
+        TcpServer.start(AEMobile.port);
     }
 
     public void serverStopping(FMLServerStoppingEvent event) {
-
+        TcpServer.stop();
     }
 
     public void serverStopped(FMLServerStoppedEvent event) {

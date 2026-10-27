@@ -285,6 +285,9 @@ task relocateShadowJar(type: ConfigureShadowRelocation) {
 }*/
 
 shadowJar {
+    // 同上：双保险，防止 processResources 的陈旧输出把 WebUI 又带进 jar
+    exclude 'static/**'
+
     project.configurations.shadeCompile.each { dep ->
         from(project.zipTree(dep)) {
             exclude 'META-INF', 'META-INF/**'
@@ -393,6 +396,10 @@ tasks.withType(JavaExec).configureEach {
 
 processResources
 {
+    // 协议 3.0.0 起没有 WebUI。src/main/resources/static 是前端子模块的构建产物
+    // （本地可能被前端脚本重新生成），一律不参与打包。
+    exclude 'static/**'
+
     // this will ensure that this task is redone when the versions change.
     inputs.property "version", project.version
     inputs.property "mcversion", project.minecraft.version
@@ -415,6 +422,8 @@ processResources
     // copy everything else, thats not the mcmod.info
     from(sourceSets.main.resources.srcDirs) {
         exclude 'mcmod.info'
+        // 协议 3.0.0 起没有 WebUI：静态资源即使被前端构建脚本重新生成，也不打进 jar
+        exclude 'static/**'
     }
 }
 

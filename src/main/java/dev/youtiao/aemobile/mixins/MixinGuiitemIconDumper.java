@@ -1,4 +1,4 @@
-package dev.youtiao.aemobile.web.mixins;
+package dev.youtiao.aemobile.mixins;
 
 import codechicken.nei.config.GuiItemIconDumper;
 import cpw.mods.fml.relauncher.Side;

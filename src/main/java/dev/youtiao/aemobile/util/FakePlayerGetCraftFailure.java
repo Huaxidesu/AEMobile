@@ -1,4 +1,4 @@
-package dev.youtiao.aemobile.web.util;
+package dev.youtiao.aemobile.util;
 
 import com.mojang.authlib.GameProfile;
 import net.minecraft.util.IChatComponent;

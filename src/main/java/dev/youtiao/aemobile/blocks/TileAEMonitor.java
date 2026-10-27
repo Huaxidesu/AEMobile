@@ -14,16 +14,19 @@ import appeng.api.networking.storage.IStorageGrid;
 import appeng.api.storage.IMEInventory;
 import appeng.api.storage.IMEMonitor;
 import appeng.api.storage.data.IAEItemStack;
+import appeng.api.storage.data.IAEStack;
 import appeng.crafting.v2.CraftingJobV2;
 import appeng.me.GridAccessException;
 import appeng.me.cache.CraftingGridCache;
 import appeng.me.cluster.implementations.CraftingCPUCluster;
 import appeng.me.helpers.IGridProxyable;
+import appeng.util.item.AEFluidStack;
 import appeng.util.item.AEItemStack;
+import appeng.util.item.IAEStackList;
 import appeng.util.item.ItemList;
 import com.google.common.collect.ImmutableList;
 import com.mojang.authlib.GameProfile;
-import dev.youtiao.aemobile.web.util.FakePlayerGetCraftFailure;
+import dev.youtiao.aemobile.util.FakePlayerGetCraftFailure;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.CompressedStreamTools;
@@ -60,12 +63,25 @@ import java.util.stream.Collectors;
 public class TileAEMonitor extends TileEntity {
 
     private static final GameProfile FAKEUUID = new GameProfile( UUID.randomUUID(), "NIGGER");
-    public static Map<String, Set<PosTuple>> tilesInTheWorld = new HashMap<>();
+    /**
+     * token → 该玩家的所有监控器坐标。
+     *
+     * <p>必须并发安全：TCP 连接线程会读（getNetworks），主线程会写（放/拆方块、区块加载）。
+     * 之前是普通 HashMap + HashSet，HTTP 时代靠"读得少"侥幸没炸。
+     */
+    public static Map<String, Set<PosTuple>> tilesInTheWorld = new java.util.concurrent.ConcurrentHashMap<>();
 
     private PosTuple posTuple;
     private ForgeDirection directionAETile;
 
     private UUID ownerUUID;
+
+    /**
+     * 访问令牌（26 字符 Base32，大写）。玩家放下第一个监控器时自动生成，
+     * 之后同玩家的监控器复用同一个；App 粘贴一次即可访问全部。
+     * 见 doc/传输协议与安全.md §2。
+     */
+    private String token;
 
     private ArrayDeque<FutureTask<?>> tasks = new ArrayDeque<>();
     String getIcon(ItemStack stack) {
@@ -400,16 +416,34 @@ public class TileAEMonitor extends TileEntity {
         super.readFromNBT(p_145839_1_);
         String uuid = p_145839_1_.getString("ownerUUID");
         if(uuid == null) return;
-        String password = uuid.split("-")[0];
         ownerUUID = UUID.fromString(uuid);
+        // 新存档直接有 token；老存档没有，用 UUID 首段兜底（下次放置方块时会换成随机 token）
+        String stored = p_145839_1_.hasKey("token") ? p_145839_1_.getString("token") : null;
+        token = (stored == null || stored.isEmpty())
+                ? uuid.split("-")[0].toUpperCase(java.util.Locale.ROOT)
+                : stored.toUpperCase(java.util.Locale.ROOT);
+        dev.youtiao.aemobile.net.AuthTokens.register(token);
         int[] tuple = p_145839_1_.getIntArray("posTuple");
         posTuple = new PosTuple(tuple[0], tuple[1], tuple[2], tuple[3]);
         String direction = p_145839_1_.getString("direction");
         if(direction != null) directionAETile = ForgeDirection.valueOf(p_145839_1_.getString("direction"));
-        TileAEMonitor.tilesInTheWorld.computeIfAbsent(password, (e) -> {
-            return new HashSet<>();
+        TileAEMonitor.tilesInTheWorld.computeIfAbsent(token, (e) -> {
+            return java.util.concurrent.ConcurrentHashMap.newKeySet();
         });
-        TileAEMonitor.tilesInTheWorld.get(password).add(posTuple);
+        TileAEMonitor.tilesInTheWorld.get(token).add(posTuple);
+        // 老存档（3.0.0 之前）的监控器没有坐标记录。玩家在线时顺手补进他的持久化 NBT，
+        // 下次启动扫 playerdata 就能恢复注册表，不再依赖「区块被加载过」。
+        if (ownerUUID != null && worldObj != null && worldObj.playerEntities != null) {
+            for (Object o : worldObj.playerEntities) {
+                if (!(o instanceof net.minecraft.entity.player.EntityPlayer)) continue;
+                net.minecraft.entity.player.EntityPlayer owner = (net.minecraft.entity.player.EntityPlayer) o;
+                if (ownerUUID.equals(owner.getUniqueID())) {
+                    dev.youtiao.aemobile.net.MonitorRegistry.rememberMonitor(
+                            owner, posTuple.dimid, posTuple.x, posTuple.y, posTuple.z);
+                    break;
+                }
+            }
+        }
     }
 
     @Override
@@ -417,6 +451,7 @@ public class TileAEMonitor extends TileEntity {
         super.writeToNBT(p_145841_1_);
         if(ownerUUID == null) return;
         p_145841_1_.setString("ownerUUID", ownerUUID.toString());
+        if(token != null) p_145841_1_.setString("token", token);
         p_145841_1_.setIntArray("posTuple", new int[]{posTuple.dimid, posTuple.x, posTuple.y, posTuple.z});
         if(directionAETile != null) {
             p_145841_1_.setString("direction", directionAETile.name());
@@ -426,11 +461,23 @@ public class TileAEMonitor extends TileEntity {
     @Override
     public void invalidate() {
         super.invalidate();
-        if(!worldObj.isRemote) {//Exception
-            if(ownerUUID == null) return;
-            String password = ownerUUID.toString().toLowerCase().split("-")[0];
-            tilesInTheWorld.get(password).remove(posTuple);
-        }
+        if(worldObj == null || worldObj.isRemote) return;
+        if(token == null || posTuple == null) return;
+        // 区块卸载也会走 invalidate()，不能当成「方块被拆」——
+        // 否则 App 一离开监控器附近，注册表里就没这个监控器了（3.0.0 之前的坑）。
+        // 只有方块真的不在了，才从注册表摘掉。
+        net.minecraft.block.Block block = worldObj.getBlock(xCoord, yCoord, zCoord);
+        if (block instanceof dev.youtiao.aemobile.blocks.BlockAEMonitor) return;
+        Set<PosTuple> set = tilesInTheWorld.get(token);
+        if (set != null) set.remove(posTuple);
+    }
+
+    public String getToken() {
+        return token;
+    }
+
+    public void setToken(String token) {
+        this.token = token == null ? null : token.toUpperCase(java.util.Locale.ROOT);
     }
 
     public ForgeDirection getDirectionAETile() {
@@ -522,7 +569,12 @@ public class TileAEMonitor extends TileEntity {
     }
 
     public Response<CraftPlan> populatePlan(CraftingJobV2 iCraftingJob) {
-        ItemList plan = new ItemList();
+        // 必须用 IAEStackList（物品+流体混合列表），不能用 ItemList（物品专用）：
+        // CraftingJobV2.populatePlan 会遍历所有已解析任务，把任务里「从网络提取的输入」
+        // 塞进这个 sink —— 流体配方的任务（ExtractItemResolver 等）会塞 AEFluidStack，
+        // ItemList.add 的参数类型是 IAEItemStack，调用边界上强转直接 ClassCastException
+        // （ItemList.java:32，2026-10-28 堆栈定位）。
+        IAEStackList plan = new IAEStackList();
         iCraftingJob.populatePlan(plan);
         List<CraftTaskItem> itemList = new ArrayList<>();
         TileEntity tileEntity = worldObj.getTileEntity(xCoord + directionAETile.offsetX, yCoord + directionAETile.offsetY, zCoord + directionAETile.offsetZ);
@@ -531,22 +583,47 @@ public class TileAEMonitor extends TileEntity {
         try {
             sg = gridProxyable.getProxy().getGrid().getCache(IStorageGrid.class);
             final IMEInventory<IAEItemStack> items = sg.getItemInventory();
-            for (IAEItemStack iaeItemStack : plan) {
+            // 注意：计划里可能有流体（AEFluidStack），不能直接当 IAEItemStack 用 ——
+            // 2026-10-28 之前这里会 ClassCastException，整个计划直接失败（比如带酸洗的配方）。
+            for (Object entry : plan) {
+                if (!(entry instanceof IAEStack)) continue;
+                IAEStack stack = (IAEStack) entry;
                 CraftTaskItem craftTaskItem = new CraftTaskItem();
-                craftTaskItem.name = Item.itemRegistry.getNameForObject(iaeItemStack.getItem());
-                craftTaskItem.meta = iaeItemStack.getItemDamage();
-                craftTaskItem.numberRemainingToCraft = iaeItemStack.getCountRequestable();
-                craftTaskItem.nbt = writeNBTAsBase64(iaeItemStack.getItemStack().getTagCompound());
-                craftTaskItem.icon = getIcon(iaeItemStack.getItemStack());
-                craftTaskItem.displayname =  iaeItemStack.getItemStack().getDisplayName();
-                IAEItemStack missing = iaeItemStack.copy();
-                IAEItemStack toExtract = items.extractItems(iaeItemStack, Actionable.SIMULATE, new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()));
-                if (toExtract == null) {
-                    toExtract = missing.copy();
-                    toExtract.setStackSize(0);
+
+                if (stack instanceof IAEItemStack) {
+                    IAEItemStack iaeItemStack = (IAEItemStack) stack;
+                    craftTaskItem.name = Item.itemRegistry.getNameForObject(iaeItemStack.getItem());
+                    craftTaskItem.meta = iaeItemStack.getItemDamage();
+                    craftTaskItem.numberRemainingToCraft = iaeItemStack.getCountRequestable();
+                    craftTaskItem.nbt = writeNBTAsBase64(iaeItemStack.getItemStack().getTagCompound());
+                    craftTaskItem.icon = getIcon(iaeItemStack.getItemStack());
+                    craftTaskItem.displayname = iaeItemStack.getItemStack().getDisplayName();
+                    IAEItemStack missing = iaeItemStack.copy();
+                    IAEItemStack toExtract = items.extractItems(iaeItemStack, Actionable.SIMULATE, new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()));
+                    if (toExtract == null) {
+                        toExtract = missing.copy();
+                        toExtract.setStackSize(0);
+                    }
+                    craftTaskItem.numberPresent = toExtract.getStackSize();
+                    craftTaskItem.setMissing(missing.getStackSize() - toExtract.getStackSize());
+                } else if (stack instanceof AEFluidStack) {
+                    // 流体统一按 ae2fc 的「流体滴」表示：name=ae2fc:fluid_drop，NBT 里放 Fluid 名，
+                    // 和 getAllStoredItems 里流体滴的格式一致，App 端能照常解析。
+                    AEFluidStack fluid = (AEFluidStack) stack;
+                    craftTaskItem.name = "ae2fc:fluid_drop";
+                    craftTaskItem.meta = 0;
+                    craftTaskItem.numberRemainingToCraft = fluid.getStackSize();
+                    NBTTagCompound tag = new NBTTagCompound();
+                    if (fluid.getFluidStack() != null && fluid.getFluidStack().getFluid() != null) {
+                        tag.setString("Fluid", fluid.getFluidStack().getFluid().getName());
+                    }
+                    craftTaskItem.nbt = writeNBTAsBase64(tag);
+                    // 流体不走 item 库存模拟，直接当作「需要补齐」
+                    craftTaskItem.numberPresent = 0;
+                    craftTaskItem.setMissing(fluid.getStackSize());
+                } else {
+                    continue;
                 }
-                craftTaskItem.numberPresent = toExtract.getStackSize();
-                craftTaskItem.setMissing(missing.getStackSize() - toExtract.getStackSize());
                 itemList.add(craftTaskItem);
             }
             CraftPlan craftPlan = new CraftPlan();
