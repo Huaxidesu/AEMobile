@@ -963,7 +963,14 @@ public class TileAEMonitor extends TileEntity {
                                 Object aspect = st.getClass().getMethod("getAspect").invoke(st);
                                 String tag = (String) aspect.getClass().getMethod("getTag").invoke(aspect);
                                 String nm = (String) aspect.getClass().getMethod("getName").invoke(aspect);
-                                essentia.add(new String[]{tag, nm, Long.toString(((IAEStack) st).getStackSize())});
+                                // 源质贴图是白色蒙版，游戏里靠 Aspect.getColor() 上色
+                                String color = "16777215";
+                                try {
+                                    Object c = aspect.getClass().getMethod("getColor").invoke(aspect);
+                                    if (c instanceof Integer) color = Integer.toString((Integer) c & 0xFFFFFF);
+                                } catch (Throwable ignored) {
+                                }
+                                essentia.add(new String[]{tag, nm, Long.toString(((IAEStack) st).getStackSize()), color});
                             }
                         }
                     } catch (Throwable ignored) {
@@ -1027,6 +1034,10 @@ public class TileAEMonitor extends TileEntity {
                     NBTTagCompound tag = new NBTTagCompound();
                     tag.setString("Aspect", e[0]);
                     tag.setString("Name", e[1]);
+                    try {
+                        tag.setInteger("Color", Integer.parseInt(e[3]));
+                    } catch (Exception ignored) {
+                    }
                     ItemStackResponse r = new ItemStackResponse();
                     r.item_name = "thaumicenergistics:essentia";
                     r.meta = 0;
