@@ -13,6 +13,7 @@ import appeng.api.networking.security.PlayerSource;
 import appeng.api.networking.storage.IStorageGrid;
 import appeng.api.storage.IMEInventory;
 import appeng.api.storage.IMEMonitor;
+import appeng.api.storage.data.IAEFluidStack;
 import appeng.api.storage.data.IAEItemStack;
 import appeng.api.storage.data.IAEStack;
 import appeng.crafting.v2.CraftingJobV2;
@@ -31,6 +32,7 @@ import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.util.FakePlayerGetCraftFailure;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraftforge.fluids.Fluid;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTBase;
 import net.minecraft.nbt.NBTTagCompound;
@@ -939,14 +941,48 @@ public class TileAEMonitor extends TileEntity {
             try {
                 // getStorageList() 会 resetStatus() 重排内部集合（fastutil，非线程安全），
                 // 所以「取列表 + 拷一份快照」都在主线程做；图标/名称这些重活再回 TCP 线程算。
-                FutureTask<List<IAEItemStack>> ft = new FutureTask<>(() -> {
-                    IMEMonitor<IAEItemStack> inv = ((IGridProxyable) tileEntity).getProxy().getStorage().getItemInventory();
-                    List<IAEItemStack> snap = new ArrayList<>();
-                    for (IAEItemStack s : inv.getStorageList()) snap.add(s);
-                    return snap;
+                // 流体是**另一个库存**（getFluidInventory），以前完全没发过，App 里根本看不到流体。
+                FutureTask<List<Object>> ft = new FutureTask<>(() -> {
+                    IStorageGrid sg = ((IGridProxyable) tileEntity).getProxy().getStorage();
+                    List<IAEItemStack> items = new ArrayList<>();
+                    for (IAEItemStack s : sg.getItemInventory().getStorageList()) items.add(s);
+                    List<IAEFluidStack> fluids = new ArrayList<>();
+                    IMEMonitor<IAEFluidStack> fInv = sg.getFluidInventory();
+                    if (fInv != null) {
+                        for (IAEFluidStack s : fInv.getStorageList()) fluids.add(s);
+                    }
+                    // 源质（神秘时代）：ThaumicEnergistics 注册的第三套库存，不是物品也不是流体。
+                    // 用反射读，没装 TE 的服务器直接跳过。读到的行：[aspect tag, 本地化名, 数量]
+                    List<String[]> essentia = new ArrayList<>();
+                    try {
+                        Object type = Class.forName("thaumicenergistics.common.storage.AEEssentiaStackType")
+                                .getField("ESSENTIA_STACK_TYPE").get(null);
+                        Object mon = sg.getMEMonitor((appeng.api.storage.data.IAEStackType) type);
+                        if (mon != null) {
+                            for (Object st : (Iterable<?>) ((IMEMonitor) mon).getStorageList()) {
+                                Object aspect = st.getClass().getMethod("getAspect").invoke(st);
+                                String tag = (String) aspect.getClass().getMethod("getTag").invoke(aspect);
+                                String nm = (String) aspect.getClass().getMethod("getName").invoke(aspect);
+                                essentia.add(new String[]{tag, nm, Long.toString(((IAEStack) st).getStackSize())});
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                        // 没装 TE / 版本不兼容：静默跳过
+                    }
+                    List<Object> both = new ArrayList<>(3);
+                    both.add(items);
+                    both.add(fluids);
+                    both.add(essentia);
+                    return both;
                 });
                 tasks.add(ft);
-                List<IAEItemStack> snapshot = ft.get();
+                List<Object> both = ft.get();
+                @SuppressWarnings("unchecked")
+                List<IAEItemStack> snapshot = (List<IAEItemStack>) both.get(0);
+                @SuppressWarnings("unchecked")
+                List<IAEFluidStack> fluidSnapshot = (List<IAEFluidStack>) both.get(1);
+                @SuppressWarnings("unchecked")
+                List<String[]> essentiaSnapshot = (List<String[]>) both.get(2);
                 List<ItemStackResponse> list = new ArrayList<>();
                 for (IAEItemStack iaeItemStack : snapshot) {
                     if(canCraftOnly && !iaeItemStack.isCraftable()) {
@@ -961,6 +997,49 @@ public class TileAEMonitor extends TileEntity {
                     itemStackResponse.icon = getIcon(iaeItemStack.getItemStack());
                     itemStackResponse.displayname = iaeItemStack.getItemStack().getDisplayName();
                     list.add(itemStackResponse);
+                }
+                // 流体按 ae2fc:fluid_drop 的既有约定发（App 的 resolveItem 认这个 name + NBT 里的 Fluid），
+                // 额外带 Name 供 App 在没有容器映射时兜底显示。
+                for (IAEFluidStack fluid : fluidSnapshot) {
+                    Fluid f = fluid.getFluid();
+                    if (f == null) continue;
+                    NBTTagCompound tag = new NBTTagCompound();
+                    tag.setString("Fluid", f.getName());
+                    tag.setString("Name", fluid.getFluidStack() != null && fluid.getFluidStack().getLocalizedName() != null
+                            ? fluid.getFluidStack().getLocalizedName() : f.getName());
+                    // 流体颜色：App 用它画「纯色方块 + 水滴」的图标，和游戏里 AE 终端一致
+                    try {
+                        tag.setInteger("Color", f.getColor() & 0xFFFFFF);
+                    } catch (Throwable ignored) {
+                    }
+                    ItemStackResponse r = new ItemStackResponse();
+                    r.item_name = "ae2fc:fluid_drop";
+                    r.meta = 0;
+                    r.count = fluid.getStackSize();
+                    r.craftable = fluid.isCraftable();
+                    r.nbt = writeNBTAsBase64(tag);
+                    r.displayname = tag.getString("Name");
+                    r.icon = "";
+                    list.add(r);
+                }
+                // 源质：name 统一 thaumicenergistics:essentia，NBT 里带 Aspect（要素 tag）和 Name
+                for (String[] e : essentiaSnapshot) {
+                    NBTTagCompound tag = new NBTTagCompound();
+                    tag.setString("Aspect", e[0]);
+                    tag.setString("Name", e[1]);
+                    ItemStackResponse r = new ItemStackResponse();
+                    r.item_name = "thaumicenergistics:essentia";
+                    r.meta = 0;
+                    try {
+                        r.count = Long.parseLong(e[2]);
+                    } catch (NumberFormatException ex) {
+                        continue;
+                    }
+                    r.craftable = false;
+                    r.nbt = writeNBTAsBase64(tag);
+                    r.displayname = e[1];
+                    r.icon = "";
+                    list.add(r);
                 }
                 return Response.ofSuccess(list);
             }  catch (ExecutionException e) {

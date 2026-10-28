@@ -45,7 +45,8 @@ public final class FrameBuilder {
         List<TileAEMonitor.ItemStackResponse> list = resp.getBody();
         Map<String, long[]> current = new LinkedHashMap<String, long[]>();
         for (TileAEMonitor.ItemStackResponse it : list) {
-            current.put(StreamState.key(it.getItem_name(), it.getMeta()),
+            // 流体滴要带 NBT 才算得出 key（多条流体共用 ae2fc:fluid_drop:0）
+            current.put(StreamState.key(it.getItem_name(), it.getMeta(), it.getNbt()),
                     new long[]{it.getCount(), it.isCraftable() ? 1 : 0});
         }
 
@@ -69,20 +70,24 @@ public final class FrameBuilder {
             List<Object[]> changed = new ArrayList<Object[]>();
             List<Object[]> added = new ArrayList<Object[]>();
             for (TileAEMonitor.ItemStackResponse it : list) {
-                String k = StreamState.key(it.getItem_name(), it.getMeta());
+                String k = StreamState.key(it.getItem_name(), it.getMeta(), it.getNbt());
                 long[] prev = st.items.get(k);
                 long craft = it.isCraftable() ? 1 : 0;
+                boolean fluid = StreamState.FLUID_DROP.equals(it.getItem_name());
                 if (prev == null) {
                     added.add(new Object[]{it.getItem_name(), it.getMeta(), it.getCount(), it.isCraftable(), it.getNbt()});
                 } else if (prev[0] != it.getCount() || prev[1] != craft) {
-                    changed.add(new Object[]{it.getItem_name(), it.getMeta(), it.getCount(), it.isCraftable()});
+                    // 流体滴必须带 NBT，否则客户端算不出是哪种流体
+                    changed.add(fluid
+                            ? new Object[]{it.getItem_name(), it.getMeta(), it.getCount(), it.isCraftable(), it.getNbt()}
+                            : new Object[]{it.getItem_name(), it.getMeta(), it.getCount(), it.isCraftable()});
                 }
             }
-            List<Object[]> removed = new ArrayList<Object[]>();
+            List<Object> removed = new ArrayList<Object>();
             for (String k : st.items.keySet()) {
                 if (!current.containsKey(k)) {
-                    int bar = k.lastIndexOf('|');
-                    removed.add(new Object[]{k.substring(0, bar), Integer.parseInt(k.substring(bar + 1))});
+                    // 直接发 key 字符串：流体滴的 key 带 NBT，拆不出 name/meta
+                    removed.add(k);
                 }
             }
             if (changed.isEmpty() && added.isEmpty() && removed.isEmpty()) {

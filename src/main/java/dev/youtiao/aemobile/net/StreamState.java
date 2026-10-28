@@ -89,8 +89,25 @@ public final class StreamState {
         }
     }
 
+    /** 流体滴在物品列表里的统一 name（AE2FC 的约定），多条不同流体共用它 */
+    public static final String FLUID_DROP = "ae2fc:fluid_drop";
+    /** 源质（神秘时代）在物品列表里的统一 name，多条不同要素共用它 */
+    public static final String ESSENTIA = "thaumicenergistics:essentia";
+
     /** 条目 key：物品名 + meta */
     public static String key(String name, int meta) {
         return name + "|" + meta;
+    }
+
+    /**
+     * 条目 key（带 NBT）。只有流体滴需要带 NBT —— 所有流体共用 {@code ae2fc:fluid_drop:0}
+     * 这一个 name+meta，不带 NBT 的话它们会在「当前状态」里互相覆盖，增量帧也会算错。
+     * 其它物品（附魔装备、蜜蜂等）故意不带 NBT：否则几千个附魔剑会变成几千行。
+     */
+    public static String key(String name, int meta, String nbt) {
+        if (nbt != null && nbt.length() > 0 && (FLUID_DROP.equals(name) || ESSENTIA.equals(name))) {
+            return name + "|" + meta + "|" + nbt;
+        }
+        return key(name, meta);
     }
 }
