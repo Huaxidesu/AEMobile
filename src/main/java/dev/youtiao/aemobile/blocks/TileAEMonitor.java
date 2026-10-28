@@ -692,18 +692,52 @@ public class TileAEMonitor extends TileEntity {
             throw new RuntimeException(e);
         }
     }
-    public CraftingJobV2 generateCraftingPlan(String item, int meta, String nbt, long count) {
-        TileEntity tileEntity = worldObj.getTileEntity(xCoord + directionAETile.offsetX, yCoord + directionAETile.offsetY, zCoord + directionAETile.offsetZ);
-        IGridProxyable gridProxyable = (IGridProxyable) tileEntity;
-        try {
-            ItemStack itemStack = new ItemStack((Item) Item.itemRegistry.getObject(item), 1, meta);
-            itemStack.setTagCompound(readNBTFromBase64(nbt));
-            AEItemStack aeItemStack = AEItemStack.create(itemStack);
-            aeItemStack.setStackSize(count);
-            return new CraftingJobV2(worldObj, gridProxyable.getProxy().getGrid(),  new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()), aeItemStack, CraftingMode.STANDARD, null);
-        } catch (GridAccessException e) {
-            throw new RuntimeException(e);
+    /**
+     * 建合成任务对象。**必须在主线程做**：CraftingJobV2 的构造函数会去读
+     * NetworkMonitor 的存储列表（ItemList.resetStatus），而 ItemList 内部的 fastutil 集合
+     * 不是线程安全的 —— 在 TCP 线程碰它会把主线程正在用的列表搞坏（2026-10-28 崩服事故）。
+     */
+    public CraftingJobV2 generateCraftingPlan(String item, int meta, String nbt, long count)
+            throws ExecutionException, InterruptedException {
+        FutureTask<CraftingJobV2> ft = new FutureTask<>(() -> {
+            TileEntity tileEntity = worldObj.getTileEntity(xCoord + directionAETile.offsetX, yCoord + directionAETile.offsetY, zCoord + directionAETile.offsetZ);
+            IGridProxyable gridProxyable = (IGridProxyable) tileEntity;
+            try {
+                ItemStack itemStack = new ItemStack((Item) Item.itemRegistry.getObject(item), 1, meta);
+                itemStack.setTagCompound(readNBTFromBase64(nbt));
+                AEItemStack aeItemStack = AEItemStack.create(itemStack);
+                aeItemStack.setStackSize(count);
+                return new CraftingJobV2(worldObj, gridProxyable.getProxy().getGrid(), new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()), aeItemStack, CraftingMode.STANDARD, null);
+            } catch (GridAccessException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        tasks.add(ft);
+        return ft.get();
+    }
+
+    /** 一片模拟的结果：done=true 表示算完了，否则 resolved 是本片结束时的已解析任务数 */
+    public static final class PlanShard {
+        public final boolean done;
+        public final int resolved;
+
+        PlanShard(boolean done, int resolved) {
+            this.done = done;
+            this.resolved = resolved;
         }
+    }
+
+    /**
+     * 跑一片模拟（1500 个节点）。同样**必须在主线程**：simulateFor 会读写 AE2 的
+     * 合成上下文 / 存储快照，和 tick 里的其它机器（等级维持器、售货机上链舱）抢同一批集合。
+     */
+    public PlanShard simulatePlanShard(CraftingJobV2 job, int nodes) throws ExecutionException, InterruptedException {
+        FutureTask<PlanShard> ft = new FutureTask<>(() -> {
+            boolean more = job.simulateFor(nodes);
+            return new PlanShard(!more, job.getContext().getResolvedTasks().size());
+        });
+        tasks.add(ft);
+        return ft.get();
     }
 
     public Response<Collection<CraftTaskItem>> getCraftingStatus(int cpuIndex) {
@@ -711,28 +745,33 @@ public class TileAEMonitor extends TileEntity {
         if(tileEntity instanceof IGridProxyable) {
             try {
                 Map<Pair<String, Pair<NBTTagCompound,Integer>>, CraftTaskItem> items = new HashMap<>();
-                int i = 0;
-                ICraftingCPU selected = null;
-                for (ICraftingCPU cpu : ((IGridProxyable) tileEntity).getProxy().getCrafting().getCpus()) {
-                    if(i == cpuIndex) {
-                        selected = cpu;
-                        break;
+                // 选 CPU + 把任务列表拷出来必须在主线程（CPU 内部集合会被 tick 里的合成进度改动）；
+                // 拷出来的三个 ItemList 是我们自己的对象，之后在 TCP 线程遍历没问题。
+                final ItemList pending = new ItemList();
+                final ItemList active = new ItemList();
+                final ItemList storage = new ItemList();
+                FutureTask<Boolean> ft = new FutureTask<>(() -> {
+                    ICraftingCPU sel = null;
+                    int idx = 0;
+                    for (ICraftingCPU cpu : ((IGridProxyable) tileEntity).getProxy().getCrafting().getCpus()) {
+                        if (idx == cpuIndex) {
+                            sel = cpu;
+                            break;
+                        }
+                        idx++;
                     }
-                    i++;
-                }
-                if(selected == null) {
+                    if (sel == null) return false;
+                    CraftingCPUCluster cluster = (CraftingCPUCluster) sel;
+                    if (cluster.getRemainingItemCount() <= 0) return false;
+                    cluster.getListOfItem(pending, CraftingItemList.PENDING);
+                    cluster.getListOfItem(active, CraftingItemList.ACTIVE);
+                    cluster.getListOfItem(storage, CraftingItemList.STORAGE);
+                    return true;
+                });
+                tasks.add(ft);
+                if (!ft.get()) {
                     return Response.ofSuccess(ImmutableList.of());
                 }
-                CraftingCPUCluster cpu = (CraftingCPUCluster) selected;
-                if(cpu.getRemainingItemCount() <= 0) {
-                    return Response.ofSuccess(ImmutableList.of());
-                }
-                ItemList pending = new ItemList();
-                ItemList active = new ItemList();
-                ItemList storage = new ItemList();
-                cpu.getListOfItem(pending, CraftingItemList.PENDING);
-                cpu.getListOfItem(active, CraftingItemList.ACTIVE);
-                cpu.getListOfItem(storage, CraftingItemList.STORAGE);
                 for (IAEItemStack iaeItemStack : pending) {
                     CraftTaskItem craftTaskItem = new CraftTaskItem();
                     craftTaskItem.name = Item.itemRegistry.getNameForObject(iaeItemStack.getItem());
@@ -789,9 +828,8 @@ public class TileAEMonitor extends TileEntity {
                     }
                 }
                 return Response.ofSuccess(items.values());
-            } catch (GridAccessException e) {
-                e.printStackTrace();
-                return Response.ofError(e.getMessage());
+            } catch (ExecutionException | InterruptedException e) {
+                return Response.ofError(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             }
         } else {
             return Response.ofError("No ME interface connected to this block. Cannot attach to AE grid.");
@@ -869,11 +907,18 @@ public class TileAEMonitor extends TileEntity {
         TileEntity tileEntity = worldObj.getTileEntity(xCoord + directionAETile.offsetX, yCoord + directionAETile.offsetY, zCoord + directionAETile.offsetZ);
         if(tileEntity instanceof IGridProxyable) {
             try {
-                FutureTask<IMEMonitor<IAEItemStack>> ft = new FutureTask<>(() -> ((IGridProxyable) tileEntity).getProxy().getStorage().getItemInventory());
+                // getStorageList() 会 resetStatus() 重排内部集合（fastutil，非线程安全），
+                // 所以「取列表 + 拷一份快照」都在主线程做；图标/名称这些重活再回 TCP 线程算。
+                FutureTask<List<IAEItemStack>> ft = new FutureTask<>(() -> {
+                    IMEMonitor<IAEItemStack> inv = ((IGridProxyable) tileEntity).getProxy().getStorage().getItemInventory();
+                    List<IAEItemStack> snap = new ArrayList<>();
+                    for (IAEItemStack s : inv.getStorageList()) snap.add(s);
+                    return snap;
+                });
                 tasks.add(ft);
-                IMEMonitor<IAEItemStack> itemInventory = ft.get();
+                List<IAEItemStack> snapshot = ft.get();
                 List<ItemStackResponse> list = new ArrayList<>();
-                for (IAEItemStack iaeItemStack : itemInventory.getStorageList()) {
+                for (IAEItemStack iaeItemStack : snapshot) {
                     if(canCraftOnly && !iaeItemStack.isCraftable()) {
                         continue;
                     }

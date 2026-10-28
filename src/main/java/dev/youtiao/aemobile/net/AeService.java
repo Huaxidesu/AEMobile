@@ -219,10 +219,11 @@ public final class AeService {
             }
 
             // 分片模拟：每片 1500 个节点，片之间回一条进度。
-            // simulateFor 本身是纯计算（不碰世界），在调用线程跑没问题；真正碰世界的
-            // populatePlan 走 tile 自己的 tasks 队列回主线程。
+            // 每一片都必须回主线程跑（tile.simulatePlanShard）：AE2 的 ItemList / 合成上下文
+            // 不是线程安全的，在 TCP 线程碰会和 tick 里的机器抢同一批集合（2026-10-28 崩服事故）。
             for (int round = 0; round < PLAN_MAX_ROUNDS; round++) {
-                if (!job.simulateFor(1500)) {
+                TileAEMonitor.PlanShard shard = tile.simulatePlanShard(job, 1500);
+                if (shard.done) {
                     TileAEMonitor.Response<TileAEMonitor.CraftPlan> r = tile.populatePlan(job);
                     if (r.isSucceed()) {
                         sink.done(r.getBody());
@@ -231,7 +232,7 @@ public final class AeService {
                     }
                     return;
                 }
-                sink.progress(job.getContext().getResolvedTasks().size());
+                sink.progress(shard.resolved);
             }
             sink.fail("PLAN_TIMEOUT");
         } catch (Exception e) {
