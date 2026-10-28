@@ -1,6 +1,8 @@
 package dev.youtiao.aemobile;
 
 import cpw.mods.fml.common.event.*;
+import dev.youtiao.aemobile.client.CommandDumpIcons;
+import net.minecraftforge.client.ClientCommandHandler;
 
 public class ClientProxy extends CommonProxy {
 
@@ -13,6 +15,8 @@ public class ClientProxy extends CommonProxy {
     // load "Do your mod setup. Build whatever data structures you care about. Register recipes."
     public void init(FMLInitializationEvent event) {
         super.init(event);
+        // /aemobile dumpicons —— 导出物品图标给 App 用（见 client/CommandDumpIcons）
+        ClientCommandHandler.instance.registerCommand(new CommandDumpIcons());
     }
 
     // postInit "Handle interaction with other mods, complete your setup based on this."
