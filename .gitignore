@@ -34,5 +34,13 @@ src/main/resources/static
 .vscode
 /doc/
 
-# WorkBuddy 本地工作区数据，不入库
+# 本地 AI 助手 / 编辑器工作区，各家工具都会生成，一律不入库
+.opencode/
 .workbuddy/
+.workbuddy-ai/
+.codebuddy/
+.claude/
+.cursor/
+.aider*/
+.continue/
+.zed/
