@@ -48,6 +48,18 @@ public final class AeService {
     /** 计划模拟最多跑这么多轮（每轮 1500 个节点），防止病态配方把线程钉死 */
     private static final int PLAN_MAX_ROUNDS = 2000;
 
+    /**
+     * plan 是唯一会长时间占主线程的 op（一次几十到几百毫秒）。
+     * 30 人服务器上必须限住：全局最多同时算 PLAN_SLOTS 个，单个 token 也不能连点。
+     */
+    private static final java.util.concurrent.Semaphore PLAN_SLOTS =
+            new java.util.concurrent.Semaphore(3);
+    /** token → [上次请求时间, 本分钟已用次数, 窗口起始时间] */
+    private static final java.util.Map<String, long[]> PLAN_RATE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long PLAN_MIN_INTERVAL_MS = 800L;
+    private static final int PLAN_PER_MINUTE = 30;
+
     private AeService() {
     }
 
@@ -201,6 +213,15 @@ public final class AeService {
      * 片与片之间回一条进度帧 —— 这样既不会长时间卡 tick，也不会在非主线程碰 AE2。
      */
     static void plan(String token, JsonNode p, PlanSink sink) {
+        String limited = planRateCheck(token);
+        if (limited != null) {
+            sink.fail(limited);
+            return;
+        }
+        if (!PLAN_SLOTS.tryAcquire()) {
+            sink.fail("服务器正在同时算别的合成计划，请过几秒再试");
+            return;
+        }
         try {
             TileAEMonitor tile = tile(token, p);
             if (tile == null) {
@@ -239,6 +260,36 @@ public final class AeService {
             // 打完整栈：计划失败的根因经常在 AE2 内部，只有 message 看不出是哪一层
             AEMobile.error("[AEMobile] 生成合成计划失败: " + e, e);
             sink.fail(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+        } finally {
+            PLAN_SLOTS.release();
         }
+    }
+
+    /**
+     * 单个 token 的计划请求限速：两次之间至少 {@link #PLAN_MIN_INTERVAL_MS}，
+     * 每分钟最多 {@link #PLAN_PER_MINUTE} 次。返回 null 表示放行，否则是要回给 App 的提示。
+     */
+    private static String planRateCheck(String token) {
+        long now = System.currentTimeMillis();
+        long[] st = PLAN_RATE.get(token);
+        if (st == null) {
+            st = new long[]{0L, 0L, now};
+            PLAN_RATE.put(token, st);
+        }
+        synchronized (st) {
+            if (now - st[2] >= 60_000L) { // 新窗口
+                st[2] = now;
+                st[1] = 0;
+            }
+            if (st[1] >= PLAN_PER_MINUTE) {
+                return "请求太频繁了，合成计划每分钟最多 " + PLAN_PER_MINUTE + " 次";
+            }
+            if (now - st[0] < PLAN_MIN_INTERVAL_MS) {
+                return "请求太快了，请稍等一下再试";
+            }
+            st[0] = now;
+            st[1]++;
+        }
+        return null;
     }
 }

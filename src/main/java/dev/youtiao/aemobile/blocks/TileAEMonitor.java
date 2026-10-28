@@ -85,7 +85,18 @@ public class TileAEMonitor extends TileEntity {
      */
     private String token;
 
-    private ArrayDeque<FutureTask<?>> tasks = new ArrayDeque<>();
+    /**
+     * 回主线程的任务队列。
+     *
+     * <p>必须用并发队列：写入方是**每连接一个**的 TCP 读线程（30 个玩家 = 30 个线程同时 add），
+     * 读取方是主线程的 {@code updateEntity}。原来用 {@code ArrayDeque}，多玩家并发时会丢任务
+     * 或把队列结构搞坏 —— 丢一个任务就意味着某个 TCP 线程的 {@code ft.get()} 永远等不到结果。
+     */
+    private final java.util.Queue<FutureTask<?>> tasks = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    /** 每 tick 给这些任务的时间预算（纳秒）；超了就把剩下的留到下个 tick，避免一次把 tick 拖死 */
+    private static final long TICK_BUDGET_NS = 8_000_000L;
+    /** 单个任务超过这个耗时就在日志里点名，方便定位是谁在拖 tick */
+    private static final long SLOW_TASK_MS = 50L;
     String getIcon(ItemStack stack) {
         String name = Item.itemRegistry.getNameForObject(stack.getItem()) + "_" + stack.getItemDamage() +  "_tag_" + TileAEMonitor.writeNBTAsBase64(stack.getTagCompound());
         return String.format("icons/%s.png", name.replace("/","_").replace(":","_"));
@@ -529,8 +540,27 @@ public class TileAEMonitor extends TileEntity {
 
     @Override
     public void updateEntity() {
-        while (!tasks.isEmpty())
-            tasks.poll().run();
+        // 每 tick 只花 TICK_BUDGET_NS 在这些任务上：多人同时开 App 时，队列里可能一次排十几个请求，
+        // 全部跑完会把这一 tick 拖到几百毫秒（玩家看到卡顿/掉 TPS）。剩下的下个 tick 继续。
+        long deadline = System.nanoTime() + TICK_BUDGET_NS;
+        while (true) {
+            FutureTask<?> task = tasks.poll();
+            if (task == null) break;
+            runTask(task, System.nanoTime());
+            if (System.nanoTime() > deadline) break; // 至少跑一个，之后按预算收手
+        }
+    }
+
+    private void runTask(FutureTask<?> task, long t0) {
+        try {
+            task.run();
+        } catch (Throwable t) {
+            AEMobile.error("[AEMobile] 主线程任务异常: " + t, t);
+        }
+        long ms = (System.nanoTime() - t0) / 1_000_000L;
+        if (ms >= SLOW_TASK_MS) {
+            AEMobile.info("[AEMobile] 主线程任务耗时 " + ms + "ms（队列剩余 " + tasks.size() + "）");
+        }
     }
 
 
