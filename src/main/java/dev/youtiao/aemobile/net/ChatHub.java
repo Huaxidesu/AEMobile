@@ -1,6 +1,7 @@
 package dev.youtiao.aemobile.net;
 
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
+import cpw.mods.fml.common.gameevent.PlayerEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.Config;
@@ -49,6 +50,10 @@ public final class ChatHub {
     public static final int KIND_GAME = 0;
     /** 手机 App 发出 */
     public static final int KIND_APP = 1;
+    /** 玩家加入服务器（只进 App 流，不广播游戏公屏） */
+    public static final int KIND_JOIN = 2;
+    /** 玩家离开服务器 */
+    public static final int KIND_LEAVE = 3;
 
     /** 投递缓冲条数（不是历史存储） */
     private static final int BUFFER = 128;
@@ -155,6 +160,26 @@ public final class ChatHub {
         }
     }
 
+    /**
+     * 玩家进出：只进 App 聊天流，不往游戏公屏广播（游戏本来就有自己的提示）。
+     * 挂在 FML 总线上；没人订阅或配置关掉时第一行就 return，零开销。
+     */
+    public static final class PlayerEvents {
+        @SubscribeEvent
+        public void onJoin(PlayerEvent.PlayerLoggedInEvent event) {
+            if (!Config.chatEnabled || !Config.chatJoinLeave || !hasSubscribers()) return;
+            if (event.player == null) return;
+            append(KIND_JOIN, event.player.getCommandSenderName(), "");
+        }
+
+        @SubscribeEvent
+        public void onLeave(PlayerEvent.PlayerLoggedOutEvent event) {
+            if (!Config.chatEnabled || !Config.chatJoinLeave || !hasSubscribers()) return;
+            if (event.player == null) return;
+            append(KIND_LEAVE, event.player.getCommandSenderName(), "");
+        }
+    }
+
     // ------------------------------------------------------------ 发：App → 游戏
 
     /**
@@ -242,8 +267,9 @@ public final class ChatHub {
      *
      * @param since 客户端上次收到的最大 seq
      * @param max   一帧最多几条
+     * @param includeEvents 是否把「玩家加入/退出」也发出去（老 App 不带这个参数就不发）
      */
-    static Batch drain(long since, int max) {
+    static Batch drain(long since, int max, boolean includeEvents) {
         long next = since;
         List<Object> rows = null;
         boolean gap = false;
@@ -263,11 +289,13 @@ public final class ChatHub {
             rows = new ArrayList<Object>();
             for (Msg m : RING) {
                 if (m.seq <= since) continue;
-                rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts});
+                // 游标必须越过被过滤掉的事件，否则关掉进出提示后每帧都从同一条开始扫
                 next = m.seq;
+                if (!includeEvents && (m.kind == KIND_JOIN || m.kind == KIND_LEAVE)) continue;
+                rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts});
                 if (rows.size() >= max) break;
             }
-            if (rows.isEmpty()) return new Batch(null, since);
+            if (rows.isEmpty()) return new Batch(null, next);
         }
 
         Map<String, Object> frame = new LinkedHashMap<String, Object>();

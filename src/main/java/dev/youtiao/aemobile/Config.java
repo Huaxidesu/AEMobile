@@ -16,6 +16,7 @@ public class Config {
         public static final int chatMinIntervalMs = 2000;
         public static final int chatPerMinute = 30;
         public static final int chatBroadcastPerTick = 5;
+        public static final boolean chatJoinLeave = true;
     }
 
     private static class Categories {
@@ -47,6 +48,8 @@ public class Config {
     public static int chatPerMinute = Defaults.chatPerMinute;
     /** 每 tick 最多往游戏里广播几条（防刷屏拖 tick） */
     public static int chatBroadcastPerTick = Defaults.chatBroadcastPerTick;
+    /** 是否把玩家加入/退出也推给 App（只进手机，不广播游戏公屏） */
+    public static boolean chatJoinLeave = Defaults.chatJoinLeave;
 
     public static void syncronizeConfiguration(File configFile) {
         Configuration configuration = new Configuration(configFile);
@@ -71,6 +74,8 @@ public class Config {
                 "Max messages per minute from the same token.");
         chatBroadcastPerTick = configuration.getInt("broadcastPerTick", Categories.chat, Defaults.chatBroadcastPerTick, 1, 50,
                 "Max messages broadcast into the game per server tick.");
+        chatJoinLeave = configuration.getBoolean("joinLeave", Categories.chat, Defaults.chatJoinLeave,
+                "Forward player join/leave notices to the App chat stream (never broadcast into game chat).");
 
         if (configuration.hasChanged()) {
             configuration.save();

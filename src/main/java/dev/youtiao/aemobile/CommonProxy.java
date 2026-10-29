@@ -84,6 +84,9 @@ public class CommonProxy {
         MinecraftForge.EVENT_BUS.register(new dev.youtiao.aemobile.net.ChatHub.ChatListener());
         cpw.mods.fml.common.FMLCommonHandler.instance().bus()
                 .register(new dev.youtiao.aemobile.net.ChatHub.TickHandler());
+        // 玩家加入/退出（只进 App 聊天流）
+        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                .register(new dev.youtiao.aemobile.net.ChatHub.PlayerEvents());
         // debug 命令桥（默认关闭）：把命令队列交给主线程执行，只能在 tick 里做
         dev.youtiao.aemobile.debug.DebugBridge.startServer();
         cpw.mods.fml.common.FMLCommonHandler.instance().bus()

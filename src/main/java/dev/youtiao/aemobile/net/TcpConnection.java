@@ -66,6 +66,8 @@ final class TcpConnection implements Runnable {
         volatile long due;
         /** chat 专用：已经发到哪一条（服务端消息 seq） */
         volatile long cursor;
+        /** chat 专用：是否要玩家加入/退出事件（老 App 不带这个参数） */
+        volatile boolean events;
 
         Sub(int id, String op, JsonNode params, StreamState state, long intervalMs) {
             this.id = id;
@@ -319,6 +321,7 @@ final class TcpConnection implements Runnable {
             int chatStreamId = streamSeq.incrementAndGet();
             Sub chatSub = new Sub(chatStreamId, op, p, null, AeService.intervalOf(op));
             chatSub.cursor = since;
+            chatSub.events = Json.boolOf(p, "events", false);
             chatSub.due = 0L;
             subs.put(chatStreamId, chatSub);
             ChatHub.addSubscriber();
@@ -374,8 +377,12 @@ final class TcpConnection implements Runnable {
 
             // 聊天：按游标取增量，没有新消息就**不发帧**（空闲零流量）
             if ("chat".equals(sub.op)) {
-                ChatHub.Batch batch = ChatHub.drain(sub.cursor, 40);
-                if (batch.frame == null) continue;
+                ChatHub.Batch batch = ChatHub.drain(sub.cursor, 40, sub.events);
+                if (batch.frame == null) {
+                    // 可能只是跳过了被过滤的进出事件，游标也要前进
+                    sub.cursor = batch.next;
+                    continue;
+                }
                 sub.cursor = batch.next;
                 Map<String, Object> chatEnv = new LinkedHashMap<String, Object>();
                 chatEnv.put("s", sub.id);
