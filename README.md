@@ -1,41 +1,81 @@
-# Monitor of Applied Energetics on web
+# AEMobile
 
-> 编写或修改文档、源码注释前，请先阅读[注释与 Markdown 编写规范](./doc/注释与Markdown规范.md)。
+| 仓库 | 是什么 |
+|---|---|
+| **[AEMobile](https://github.com/Huaxidesu/AEMobile)** | 服务端 mod（本仓库）：AE 监控器、TCP 服务、图标导出命令 |
+| [AEMobileApp](https://github.com/Huaxidesu/AEMobileApp) | 手机端 App：AE 监控、物品 / 流体 / 源质终端 |
+| [AEMobileIcoOutput](https://github.com/Huaxidesu/AEMobileIcoOutput) | 图标库维护包：导出、建库、出包脚本 |
 
-## Overview Page
-![overview](./overview.png)
-## Craft Page
-![craft](./craft.png)
-## CPU Monitoring Page
-![cpus](./cpus.png)
-## EN:
-This mod provides a web api for monitoring the AE outside of the game.  
-Placing the 'Applied Energetics Monitor' beside the ME network exposes the network to the API.  
-Recipe: ![](./recipe.png) . 
-When placing the block it will print a password in chat, then visit http://server-address:44444 and setup with this password to access it.
-The browser WebUI is disabled by default; set `web.enableWebUI=true` in the mod config to enable it. The mobile app does not need the WebUI.
-As server administrator you need to generate icons before using the webui. 
-![](./NEIDump.png)
-You need to install mod to client and open the 'Data Dump' tool in 'Not Enough Items', so all icons of items are exported.  
-And then you should upload the directory called 'dumps' to the root of your minecraft server pack.
-## CN
-本模组提供通过http接口在外部监控AE的能力 . 
-方块：AE监控器    
-合成表：![](./recipe.png) . 
-放置在ME控制器边上以注册ME网络到http接口，放置时会在聊天框提供密码，使用该密码访问 http://服务器地址:44444，即可完成设置。
-浏览器WebUI默认关闭，需要在mod配置文件中把 `web.enableWebUI` 设为 true 才会开放网页；手机App不依赖WebUI。  
-使用webUI前你需要先导出图标。  
-将mod安装到客户端，并在单机模式下打开NEI的“数据导出”功能，选择导出图标，分辨率选128.  
-导出完成后请把dumps目录复制到服务端的根目录下以使其生效。
+服务端 mod：把 GTNH 服务器里的 AE 网络暴露给手机 App，用自定义 TCP 协议传输。
+
+> 本项目修改自 [koiNoCirculation/AEMobile](https://github.com/koiNoCirculation/AEMobile)。
+> 原版通过 HTTP 与浏览器 WebUI 提供监控能力；本分支移除了 Tomcat 与 WebUI，
+> 改为自定义 TCP 协议（协议 3.0.0），由手机 App 直接连接。
+
+## 功能
+
+- 查询 AE 网络里的物品、流体、神秘时代源质
+- 提交合成计划，查看每台 CPU 的进度与剩余任务
+- 导出图标，供 App 的图标库使用
+
+## 使用
+
+1. 服务端安装本 mod
+2. 在 ME 控制器旁边放置「AE 监控器」，方块会把网络注册到服务，并在聊天栏输出访问密码
+3. 手机端打开 [AEMobileApp](https://github.com/Huaxidesu/AEMobileApp)，填写服务器地址、端口与密码
+
+合成表：
+
+![](./recipe.png)
+
+## 配置
+
+配置文件 `config/AEMobile.cfg`：
+
+| 配置项 | 说明 |
+|---|---|
+| `server.port` | TCP 监听端口，默认 `44444`。App 里填的端口必须与之一致 |
+
+端口需要在防火墙或端口映射中放行，App 才能连上。
+
+## 图标
+
+App 的图标库由 [AEMobileIcoOutput](https://github.com/Huaxidesu/AEMobileIcoOutput) 生成。
+客户端进入世界后执行：
+
+```
+/aemobile dump all
+```
+
+物品图标、流体颜色与方块图集快照、源质颜色与贴图路径会写入 `dumps/aemobile/`，
+再按该仓库的 `AGENTS.md` 建库打包。
+
+也可以只导其中一类：
+
+```
+/aemobile dump items [尺寸]    仅物品图标，默认 128px
+/aemobile dump fluids          仅流体
+/aemobile dump aspects         仅源质
+```
+
 ## Build
-Run ./gradlew build  
 
-## Dev
-由于spring boot和mc内部的一些包冲突，打包用了包重定位手段，因此直接run client会报错，需要对IDEA的run server和run client进行设置。    
-![](./exclusion.png)
-classpath选项删除，排除掉build/classes/java/main目录以完全把mod的文件排除出去。我们需要使用打好的dev包来运行。  
-复制lib/aemobile-xxx.dirty-dev.jar到run/mods以让GradleStart加载打好包的dev mod，即可完成启动，遇到报错提示，忽视它继续运行即可。  
+```bash
+./gradlew build
+```
 
+产物在 `build/libs/`：`*.jar` 为发布包，`*-dev.jar` 为开发调试用。
 
+## Development
 
+发布包对部分依赖做了重定位（shadow jar），直接用 IDE 的 runClient 可能加载到未重定位的依赖而报错。
+推荐用打包产物运行：
 
+1. `./gradlew build`
+2. 把 `build/libs/aemobile-*-dev.jar` 复制到 `run/mods`
+3. 由 GradleStart 加载该 dev 包启动客户端或服务端
+
+## Credits
+
+- 原项目：[koiNoCirculation/AEMobile](https://github.com/koiNoCirculation/AEMobile)，最初的 HTTP 与 WebUI 监控实现
+- 图标素材版权归各模组作者所有（GregTech、Thaumcraft 及 GTNH 各模组）
