@@ -70,6 +70,23 @@ public final class TcpServer {
         AEMobile.info("[AEMobile] TCP 服务已停止");
     }
 
+    /**
+     * 断开所有用这个 token 鉴权成功的连接（重置绑定码时调）。
+     * 旧连接不主动断的话，它还能继续读数据，等于旧码没失效。
+     */
+    public static void closeByToken(String token) {
+        TcpServer server = instance;
+        if (server != null) server.closeByTokenImpl(token);
+    }
+
+    private void closeByTokenImpl(String token) {
+        if (token == null || token.isEmpty()) return;
+        for (TcpConnection conn : connections) {
+            String current = conn.token();
+            if (current != null && current.equalsIgnoreCase(token)) conn.close("token-reset");
+        }
+    }
+
     private void begin() {
         Thread accept = new Thread(new Runnable() {
             @Override

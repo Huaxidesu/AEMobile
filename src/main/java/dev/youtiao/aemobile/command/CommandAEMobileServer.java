@@ -40,6 +40,10 @@ import java.util.Locale;
 public class CommandAEMobileServer extends CommandBase {
 
     private static final SimpleDateFormat TIME = new SimpleDateFormat("HH:mm:ss");
+    /** 重置绑定码的冷却：同一个玩家 30 秒内只能一次 */
+    private static final long TOKEN_RESET_COOLDOWN_MS = 30000L;
+    private static final java.util.Map<java.util.UUID, Long> TOKEN_RESET_AT =
+            new java.util.concurrent.ConcurrentHashMap<java.util.UUID, Long>();
 
     @Override
     public String getCommandName() {
@@ -48,17 +52,35 @@ public class CommandAEMobileServer extends CommandBase {
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/aemobile stats [reset] | tps | dims";
+        return "/aemobile token reset | stats [reset] | tps | dims";
+    }
+
+    /**
+     * 整个命令对所有人可见，因为 {@code token reset} 是玩家自助功能；
+     * 管理子命令在 {@link #processCommand} 里单独检查权限 2。
+     */
+    @Override
+    public int getRequiredPermissionLevel() {
+        return 0;
     }
 
     @Override
-    public int getRequiredPermissionLevel() {
-        return 2;
+    public boolean canCommandSenderUseCommand(ICommandSender sender) {
+        return true;
     }
 
     @Override
     public void processCommand(ICommandSender sender, String[] args) {
         String sub = args.length == 0 ? "stats" : args[0].toLowerCase(Locale.ROOT);
+        if ("token".equals(sub)) {
+            resetToken(sender, args);
+            return;
+        }
+        if (!sender.canCommandSenderUseCommand(2, "aemobile")) {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 权限不足：这个子命令需要管理员"));
+            return;
+        }
         if ("reset".equals(sub) || ("stats".equals(sub) && args.length > 1 && "reset".equalsIgnoreCase(args[1]))) {
             Metrics.reset();
             sender.addChatMessage(new ChatComponentText(EnumChatFormatting.GREEN + "[AEMobile] 统计已清零"));
@@ -79,6 +101,58 @@ public class CommandAEMobileServer extends CommandBase {
         // 顺手落盘一份，方便外部读取（AI/脚本不用解析聊天记录）
         Metrics.dump(DebugBridge.serverDir(), 0);
         sender.addChatMessage(new ChatComponentText(EnumChatFormatting.AQUA + "[AEMobile] " + Metrics.json()));
+    }
+
+    // ------------------------------------------------------------ token reset
+
+    /**
+     * {@code /aemobile token reset}：重置自己的绑定码。
+     *
+     * <p>新码只打在聊天栏（不写日志、不落盘）；旧码立刻注销，所有用它的连接立刻断开。
+     */
+    private void resetToken(ICommandSender sender, String[] args) {
+        if (args.length < 2 || !"reset".equalsIgnoreCase(args[1])) {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 用法：/aemobile token reset"));
+            return;
+        }
+        net.minecraft.entity.player.EntityPlayer player = sender instanceof net.minecraft.entity.player.EntityPlayer
+                ? (net.minecraft.entity.player.EntityPlayer) sender
+                : null;
+        if (player == null) {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 只有游戏内玩家能重置自己的绑定码"));
+            return;
+        }
+
+        java.util.UUID uuid = player.getUniqueID();
+        long now = System.currentTimeMillis();
+        Long last = uuid == null ? null : TOKEN_RESET_AT.get(uuid);
+        if (last != null && now - last < TOKEN_RESET_COOLDOWN_MS) {
+            long left = (TOKEN_RESET_COOLDOWN_MS - (now - last) + 999L) / 1000L;
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.YELLOW
+                    + "[AEMobile] 刚重置过，请等 " + left + " 秒再试"));
+            return;
+        }
+
+        dev.youtiao.aemobile.net.MonitorRegistry.Reset reset =
+                dev.youtiao.aemobile.net.MonitorRegistry.reset(player);
+        if (reset == null) {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 重置失败：读取玩家数据出错"));
+            return;
+        }
+        if (uuid != null) TOKEN_RESET_AT.put(uuid, now);
+        dev.youtiao.aemobile.net.TcpServer.closeByToken(reset.oldToken);
+
+        sender.addChatMessage(new ChatComponentText(EnumChatFormatting.GREEN
+                + "[AEMobile] 绑定码已重置：" + reset.newToken));
+        sender.addChatMessage(new ChatComponentText(EnumChatFormatting.YELLOW
+                + "[AEMobile] 旧码已立即失效，所有 App 设备需要用新码重新连接。"));
+        sender.addChatMessage(new ChatComponentText(EnumChatFormatting.GRAY
+                + "[AEMobile] 已同步 " + reset.monitors + " 个监控器"));
+        dev.youtiao.aemobile.AEMobile.info("[AEMobile] " + player.getCommandSenderName()
+                + " 重置了绑定码（" + reset.monitors + " 个监控器）");
     }
 
     // ------------------------------------------------------------ tps

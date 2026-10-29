@@ -413,6 +413,11 @@ final class TcpConnection implements Runnable {
         return subs.size();
     }
 
+    /** 这条连接鉴权时用的 token（重置绑定码时按它踢人） */
+    String token() {
+        return token;
+    }
+
     // ------------------------------------------------------------ 发送
 
     /** 发一帧；返回 payload 字节数（0 表示连接已关），给统计用 */
