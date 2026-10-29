@@ -65,6 +65,25 @@ public final class AuthTokens {
         BY_KID.computeIfAbsent(kidOf(t), k -> Collections.synchronizedList(new ArrayList<>())).add(t);
     }
 
+    /**
+     * 注销一个 token（重置绑定码时用）。
+     *
+     * <p>只从 kid 索引和全集里摘掉；已建立的连接需要由 {@code TcpServer.closeByToken}
+     * 主动断开，否则它们还能继续用旧 token 收推。
+     */
+    public static void unregister(String token) {
+        if (token == null || token.isEmpty()) return;
+        String t = token.toUpperCase(Locale.ROOT);
+        if (!ALL.remove(t)) return;
+        String kid = kidOf(t);
+        List<String> list = BY_KID.get(kid);
+        if (list == null) return;
+        synchronized (list) {
+            list.remove(t);
+            if (list.isEmpty()) BY_KID.remove(kid);
+        }
+    }
+
     /** token 的前 8 字符，作为请求头里的定位标识 */
     public static String kidOf(String token) {
         String t = token.toUpperCase(Locale.ROOT);

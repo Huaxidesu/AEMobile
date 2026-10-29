@@ -8,10 +8,17 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
 import net.minecraft.nbt.NBTTagString;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.tileentity.TileEntity;
+import net.minecraft.world.World;
+import net.minecraftforge.common.DimensionManager;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 监控器注册表 / token 表的持久化。
@@ -33,6 +40,14 @@ public final class MonitorRegistry {
     public static final String TOKEN_KEY = "aemobile_token";
     /** 玩家持久化 NBT 里的监控器坐标列表键，每项格式 "dimid,x,y,z" */
     public static final String MONITORS_KEY = "aemobile_monitors";
+
+    /**
+     * owner UUID → 当前 token。
+     *
+     * <p>重置绑定码后，未加载区块里的 tile 仍会从自己的 NBT 读旧 token；靠这张表在
+     * {@code TileAEMonitor.readFromNBT} 里覆盖，旧码才不会「复活」。
+     */
+    private static final Map<UUID, String> BY_OWNER = new ConcurrentHashMap<UUID, String>();
 
     private MonitorRegistry() {
     }
@@ -58,6 +73,105 @@ public final class MonitorRegistry {
         list.appendTag(new NBTTagString(key));
         persisted.setTag(MONITORS_KEY, list);
         data.setTag(EntityPlayer.PERSISTED_NBT_TAG, persisted);
+    }
+
+    // ------------------------------------------------------------ 重置绑定码
+
+    /** 重置结果：旧码、新码、搬过去的监控器数量 */
+    public static final class Reset {
+        public final String oldToken;
+        public final String newToken;
+        public final int monitors;
+
+        Reset(String oldToken, String newToken, int monitors) {
+            this.oldToken = oldToken;
+            this.newToken = newToken;
+            this.monitors = monitors;
+        }
+    }
+
+    /** 玩家当前的 token（未登记过返回 null） */
+    public static String currentToken(UUID owner) {
+        return owner == null ? null : BY_OWNER.get(owner);
+    }
+
+    /**
+     * 重置玩家的绑定码。
+     *
+     * <p>只改内存与玩家 NBT，不加载区块：已加载的监控器顺手改掉，没加载的等以后
+     * {@code readFromNBT} 时用 {@link #currentToken} 解析成新码。调用方负责踢掉旧连接
+     * （{@code TcpServer.closeByToken(reset.oldToken)}）。
+     *
+     * <p>必须在主线程调。
+     */
+    public static Reset reset(EntityPlayer player) {
+        if (player == null) return null;
+        NBTTagCompound data = player.getEntityData();
+        NBTTagCompound persisted = data.getCompoundTag(EntityPlayer.PERSISTED_NBT_TAG);
+        String raw = persisted.getString(TOKEN_KEY);
+        String old = raw == null ? "" : raw.trim().toUpperCase(Locale.ROOT);
+
+        Set<TileAEMonitor.PosTuple> coords = ConcurrentHashMap.newKeySet();
+        if (!old.isEmpty()) {
+            Set<TileAEMonitor.PosTuple> known = TileAEMonitor.tilesInTheWorld.remove(old);
+            if (known != null) coords.addAll(known);
+        }
+        // 老存档的兜底码（UUID 首段）也要一起废掉，否则它仍然能访问。
+        UUID owner = player.getUniqueID();
+        String fallback = owner == null ? "" : owner.toString().split("-")[0].toUpperCase(Locale.ROOT);
+        if (!fallback.isEmpty() && !fallback.equals(old)) {
+            AuthTokens.unregister(fallback);
+            Set<TileAEMonitor.PosTuple> stale = TileAEMonitor.tilesInTheWorld.remove(fallback);
+            if (stale != null) coords.addAll(stale);
+        }
+
+        // 玩家 NBT 里记录的坐标才是权威：内存表可能因为刚重启还没恢复全
+        NBTTagList list = persisted.getTagList(MONITORS_KEY, 8);
+        for (int i = 0; i < list.tagCount(); i++) {
+            TileAEMonitor.PosTuple p = parsePos(list.getStringTagAt(i));
+            if (p != null) coords.add(p);
+        }
+
+        String next = AuthTokens.generate();
+        persisted.setString(TOKEN_KEY, next);
+        data.setTag(EntityPlayer.PERSISTED_NBT_TAG, persisted);
+
+        AuthTokens.register(next);
+        if (!old.isEmpty()) AuthTokens.unregister(old);
+        TileAEMonitor.tilesInTheWorld.put(next, coords);
+        if (owner != null) BY_OWNER.put(owner, next);
+
+        restamp(coords, next);
+        return new Reset(old, next, coords.size());
+    }
+
+    /** 已加载的 tile 立刻换码；没加载的留给 readFromNBT */
+    private static void restamp(Set<TileAEMonitor.PosTuple> coords, String token) {
+        for (TileAEMonitor.PosTuple p : coords) {
+            try {
+                World world = DimensionManager.getWorld(p.getDimid());
+                if (world == null) continue;
+                if (!world.getChunkProvider().chunkExists(p.getX() >> 4, p.getZ() >> 4)) continue;
+                TileEntity te = world.getTileEntity(p.getX(), p.getY(), p.getZ());
+                if (te instanceof TileAEMonitor) {
+                    TileAEMonitor tile = (TileAEMonitor) te;
+                    tile.setToken(token);
+                    tile.markDirty();
+                }
+            } catch (Throwable ignored) {
+                // 单个坐标异常不影响其余监控器
+            }
+        }
+    }
+
+    /** 从 playerdata/<uuid>.dat 的文件名取玩家 UUID */
+    private static UUID ownerOf(File file) {
+        try {
+            String name = file.getName();
+            return UUID.fromString(name.substring(0, name.length() - 4));
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // ------------------------------------------------------------ 启动恢复
@@ -105,6 +219,8 @@ public final class MonitorRegistry {
                 if (token == null || token.isEmpty()) continue;
                 token = token.toUpperCase(Locale.ROOT);
                 AuthTokens.register(token);
+                UUID owner = ownerOf(file);
+                if (owner != null) BY_OWNER.put(owner, token);
                 tokens++;
 
                 NBTTagList list = persisted.getTagList(MONITORS_KEY, 8);
@@ -120,18 +236,25 @@ public final class MonitorRegistry {
 
     /** 解析 "dimid,x,y,z" 并登记到 tilesInTheWorld；格式不对返回 false */
     private static boolean addMonitor(String token, String pos) {
-        if (pos == null) return false;
+        TileAEMonitor.PosTuple p = parsePos(pos);
+        if (p == null) return false;
+        TileAEMonitor.tilesInTheWorld
+                .computeIfAbsent(token, k -> java.util.concurrent.ConcurrentHashMap.newKeySet())
+                .add(p);
+        return true;
+    }
+
+    /** "dimid,x,y,z" → PosTuple；格式不对返回 null */
+    private static TileAEMonitor.PosTuple parsePos(String pos) {
+        if (pos == null) return null;
         String[] parts = pos.split(",");
-        if (parts.length != 4) return false;
+        if (parts.length != 4) return null;
         int[] v = new int[4];
         try {
             for (int i = 0; i < 4; i++) v[i] = Integer.parseInt(parts[i].trim());
         } catch (NumberFormatException e) {
-            return false;
+            return null;
         }
-        TileAEMonitor.tilesInTheWorld
-                .computeIfAbsent(token, k -> java.util.concurrent.ConcurrentHashMap.newKeySet())
-                .add(new TileAEMonitor.PosTuple(v[0], v[1], v[2], v[3]));
-        return true;
+        return new TileAEMonitor.PosTuple(v[0], v[1], v[2], v[3]);
     }
 }

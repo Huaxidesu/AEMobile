@@ -435,11 +435,18 @@ public class TileAEMonitor extends TileEntity {
         String uuid = p_145839_1_.getString("ownerUUID");
         if(uuid == null) return;
         ownerUUID = UUID.fromString(uuid);
-        // 新存档直接有 token；老存档没有，用 UUID 首段兜底（下次放置方块时会换成随机 token）
+        // owner 的当前码优先：玩家执行过 /aemobile token reset 后，没加载的区块里
+        // 的 tile 仍然存着旧码，这里必须覆盖掉，否则旧码会被重新登记、变成「复活」。
+        String ownerToken = dev.youtiao.aemobile.net.MonitorRegistry.currentToken(ownerUUID);
         String stored = p_145839_1_.hasKey("token") ? p_145839_1_.getString("token") : null;
-        token = (stored == null || stored.isEmpty())
-                ? uuid.split("-")[0].toUpperCase(java.util.Locale.ROOT)
-                : stored.toUpperCase(java.util.Locale.ROOT);
+        if (ownerToken != null && !ownerToken.isEmpty()) {
+            token = ownerToken.toUpperCase(java.util.Locale.ROOT);
+        } else {
+            // 新存档直接有 token；老存档没有，用 UUID 首段兜底（下次放置方块时会换成随机 token）
+            token = (stored == null || stored.isEmpty())
+                    ? uuid.split("-")[0].toUpperCase(java.util.Locale.ROOT)
+                    : stored.toUpperCase(java.util.Locale.ROOT);
+        }
         dev.youtiao.aemobile.net.AuthTokens.register(token);
         int[] tuple = p_145839_1_.getIntArray("posTuple");
         posTuple = new PosTuple(tuple[0], tuple[1], tuple[2], tuple[3]);
