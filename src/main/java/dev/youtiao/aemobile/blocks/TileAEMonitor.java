@@ -29,10 +29,13 @@ import appeng.util.item.ItemList;
 import com.google.common.collect.ImmutableList;
 import com.mojang.authlib.GameProfile;
 import dev.youtiao.aemobile.AEMobile;
+import dev.youtiao.aemobile.net.StreamState;
 import dev.youtiao.aemobile.util.FakePlayerGetCraftFailure;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraftforge.fluids.Fluid;
+import net.minecraftforge.fluids.FluidRegistry;
+import net.minecraftforge.fluids.FluidStack;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTBase;
 import net.minecraft.nbt.NBTTagCompound;
@@ -658,6 +661,122 @@ public class TileAEMonitor extends TileEntity {
         return sb.toString().trim();
     }
 
+    // --------------------------------------------------- 合成目标栈（物品 / 流体 / 源质）
+
+    /**
+     * 把 App 传来的「名字 + meta + NBT」翻译成 AE2 的合成目标栈。
+     *
+     * <p>物品列表里有两类条目**不是真正的物品**，直接用 ItemStack 建栈会算不出计划：
+     * <ul>
+     *   <li>流体：{@code ae2fc:fluid_drop} + NBT{Fluid} —— 目标是 {@link AEFluidStack}
+     *       （流体样板的输出本来就是流体栈，见 ae2fc 的 FluidPatternDetails）；</li>
+     *   <li>源质：{@code thaumicenergistics:essentia} + NBT{Aspect} —— 目标是 TE 的
+     *       {@code AEEssentiaStack}，本 mod 不编译依赖 TE，走反射构造。</li>
+     * </ul>
+     *
+     * <p>这两类条目的 NBT 里还有我们额外塞的 {@code Name} / {@code Color}（只给 App 显示用），
+     * 建栈时必须按各自格式重建：AE2 用 NBT 实例判等（{@code AEItemDef.equals}），
+     * 多一个键就认不出是网络里那个东西，计划会变成「全部缺失」。
+     */
+    private IAEStack<?> buildTargetStack(String item, int meta, String nbtBase64, long count) {
+        NBTTagCompound tag = readNBTFromBase64(nbtBase64);
+        if (StreamState.FLUID_DROP.equals(item) && tag != null) {
+            Fluid fluid = FluidRegistry.getFluid(tag.getString("Fluid"));
+            if (fluid != null) {
+                IAEFluidStack stack = AEFluidStack.create(new FluidStack(fluid, 1));
+                stack.setStackSize(count);
+                return stack;
+            }
+        }
+        if (StreamState.ESSENTIA.equals(item) && tag != null) {
+            IAEStack<?> stack = createEssentiaStack(tag.getString("Aspect"), count);
+            if (stack != null) return stack;
+        }
+        ItemStack itemStack = new ItemStack((Item) Item.itemRegistry.getObject(item), 1, meta);
+        itemStack.setTagCompound(tag);
+        AEItemStack aeItemStack = AEItemStack.create(itemStack);
+        aeItemStack.setStackSize(count);
+        return aeItemStack;
+    }
+
+    /** 源质栈（反射）：TE 的 AEEssentiaStack(Aspect, long)；没装 TE / 要素名不对返回 null */
+    private static IAEStack<?> createEssentiaStack(String aspectTag, long count) {
+        if (aspectTag == null || aspectTag.isEmpty()) return null;
+        try {
+            Class<?> aspectCls = Class.forName("thaumcraft.api.aspects.Aspect");
+            Object aspect = aspectCls.getMethod("getAspect", String.class).invoke(null, aspectTag);
+            if (aspect == null) return null;
+            Class<?> stackCls = Class.forName("thaumicenergistics.common.storage.AEEssentiaStack");
+            return (IAEStack<?>) stackCls.getConstructor(aspectCls, long.class).newInstance(aspect, count);
+        } catch (Throwable t) {
+            AEMobile.info("[AEMobile] 构造源质栈失败(" + aspectTag + "): " + t);
+            return null;
+        }
+    }
+
+    /** 这条栈是不是源质（TE 的 AEEssentiaStack）——它既不是物品也不是流体 */
+    private static boolean isEssentiaStack(IAEStack<?> stack) {
+        return stack != null && "thaumicenergistics.common.storage.AEEssentiaStack".equals(stack.getClass().getName());
+    }
+
+    /** 源质库存（ThaumicEnergistics 注册的第三套 stack type）；没装 TE 返回 null */
+    private static IMEMonitor<?> essentiaMonitor(IStorageGrid sg) {
+        try {
+            Object type = Class.forName("thaumicenergistics.common.storage.AEEssentiaStackType")
+                    .getField("ESSENTIA_STACK_TYPE").get(null);
+            return sg.getMEMonitor((appeng.api.storage.data.IAEStackType) type);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 反射调用无参方法，失败返回 null（源质的 Aspect 是 TC 的类，编译期拿不到） */
+    private static Object callNoArg(Object target, String method) {
+        if (target == null) return null;
+        try {
+            return target.getClass().getMethod(method).invoke(target);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 源质/流体条目在协议里的 NBT（App 用 Aspect/Fluid 认类型，Name/Color 只用来显示） */
+    private static NBTTagCompound essentiaTag(IAEStack<?> stack) {
+        Object aspect = callNoArg(stack, "getAspect");
+        NBTTagCompound tag = new NBTTagCompound();
+        Object tagName = callNoArg(aspect, "getTag");
+        Object display = callNoArg(aspect, "getName");
+        tag.setString("Aspect", tagName instanceof String ? (String) tagName : "");
+        tag.setString("Name", display instanceof String ? (String) display : "");
+        Object color = callNoArg(aspect, "getColor");
+        tag.setInteger("Color", color instanceof Integer ? ((Integer) color) & 0xFFFFFF : 0xFFFFFF);
+        return tag;
+    }
+
+    private static NBTTagCompound fluidTag(IAEFluidStack stack) {
+        NBTTagCompound tag = new NBTTagCompound();
+        if (stack.getFluidStack() != null && stack.getFluidStack().getFluid() != null) {
+            tag.setString("Fluid", stack.getFluidStack().getFluid().getName());
+            String localized = stack.getFluidStack().getLocalizedName();
+            tag.setString("Name", localized != null ? localized : stack.getFluidStack().getFluid().getName());
+        }
+        try {
+            tag.setInteger("Color", stack.getFluid().getColor() & 0xFFFFFF);
+        } catch (Throwable ignored) {
+        }
+        return tag;
+    }
+
+    /** 网络里有没有「输出这条栈」的样板。源质/流体的 craftable 标记不一定被 AE2 维护，用它兜底 */
+    private boolean hasPatternFor(ICraftingGrid grid, IAEStack<?> stack) {
+        if (!(grid instanceof CraftingGridCache)) return false;
+        try {
+            return !((CraftingGridCache) grid).getCraftingFor(stack, null, 0, worldObj).isEmpty();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     public Response<CraftPlan> populatePlan(CraftingJobV2 iCraftingJob) {
         // 必须用 IAEStackList（物品+流体混合列表），不能用 ItemList（物品专用）：
         // CraftingJobV2.populatePlan 会遍历所有已解析任务，把任务里「从网络提取的输入」
@@ -673,6 +792,11 @@ public class TileAEMonitor extends TileEntity {
         try {
             sg = gridProxyable.getProxy().getGrid().getCache(IStorageGrid.class);
             final IMEInventory<IAEItemStack> items = sg.getItemInventory();
+            // 流体/源质各有自己的库存：计划里出现它们时要像物品一样算「网络里已有多少」，
+            // 否则 App 会把整份需求都算成缺失（以前流体分支直接写死 numberPresent=0）。
+            final MachineSource source = new MachineSource((IActionHost) gridProxyable.getProxy().getMachine());
+            final IMEMonitor<IAEFluidStack> fluidInv = sg.getFluidInventory();
+            final IMEMonitor essentiaInv = essentiaMonitor(sg);
             // 注意：计划里可能有流体（AEFluidStack），不能直接当 IAEItemStack 用 ——
             // 2026-10-28 之前这里会 ClassCastException，整个计划直接失败（比如带酸洗的配方）。
             for (Object entry : plan) {
@@ -689,7 +813,7 @@ public class TileAEMonitor extends TileEntity {
                     craftTaskItem.icon = getIcon(iaeItemStack.getItemStack());
                     craftTaskItem.displayname = iaeItemStack.getItemStack().getDisplayName();
                     IAEItemStack missing = iaeItemStack.copy();
-                    IAEItemStack toExtract = items.extractItems(iaeItemStack, Actionable.SIMULATE, new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()));
+                    IAEItemStack toExtract = items.extractItems(iaeItemStack, Actionable.SIMULATE, source);
                     if (toExtract == null) {
                         toExtract = missing.copy();
                         toExtract.setStackSize(0);
@@ -699,18 +823,31 @@ public class TileAEMonitor extends TileEntity {
                 } else if (stack instanceof AEFluidStack) {
                     // 流体统一按 ae2fc 的「流体滴」表示：name=ae2fc:fluid_drop，NBT 里放 Fluid 名，
                     // 和 getAllStoredItems 里流体滴的格式一致，App 端能照常解析。
-                    AEFluidStack fluid = (AEFluidStack) stack;
-                    craftTaskItem.name = "ae2fc:fluid_drop";
+                    IAEFluidStack fluid = (IAEFluidStack) stack;
+                    craftTaskItem.name = StreamState.FLUID_DROP;
                     craftTaskItem.meta = 0;
-                    craftTaskItem.numberRemainingToCraft = fluid.getStackSize();
-                    NBTTagCompound tag = new NBTTagCompound();
-                    if (fluid.getFluidStack() != null && fluid.getFluidStack().getFluid() != null) {
-                        tag.setString("Fluid", fluid.getFluidStack().getFluid().getName());
+                    craftTaskItem.numberRemainingToCraft = fluid.getCountRequestable();
+                    craftTaskItem.nbt = writeNBTAsBase64(fluidTag(fluid));
+                    long present = 0;
+                    if (fluidInv != null) {
+                        IAEFluidStack got = fluidInv.extractItems(fluid.copy(), Actionable.SIMULATE, source);
+                        if (got != null) present = got.getStackSize();
                     }
-                    craftTaskItem.nbt = writeNBTAsBase64(tag);
-                    // 流体不走 item 库存模拟，直接当作「需要补齐」
-                    craftTaskItem.numberPresent = 0;
-                    craftTaskItem.setMissing(fluid.getStackSize());
+                    craftTaskItem.numberPresent = present;
+                    craftTaskItem.setMissing(Math.max(0, fluid.getStackSize() - present));
+                } else if (isEssentiaStack(stack)) {
+                    // 源质（神秘时代要素）：name=thaumicenergistics:essentia，NBT 里放 Aspect
+                    craftTaskItem.name = StreamState.ESSENTIA;
+                    craftTaskItem.meta = 0;
+                    craftTaskItem.numberRemainingToCraft = stack.getCountRequestable();
+                    craftTaskItem.nbt = writeNBTAsBase64(essentiaTag(stack));
+                    long present = 0;
+                    if (essentiaInv != null) {
+                        Object got = essentiaInv.extractItems(stack.copy(), Actionable.SIMULATE, source);
+                        if (got instanceof IAEStack) present = ((IAEStack) got).getStackSize();
+                    }
+                    craftTaskItem.numberPresent = present;
+                    craftTaskItem.setMissing(Math.max(0, stack.getStackSize() - present));
                 } else {
                     continue;
                 }
@@ -735,11 +872,9 @@ public class TileAEMonitor extends TileEntity {
             TileEntity tileEntity = worldObj.getTileEntity(xCoord + directionAETile.offsetX, yCoord + directionAETile.offsetY, zCoord + directionAETile.offsetZ);
             IGridProxyable gridProxyable = (IGridProxyable) tileEntity;
             try {
-                ItemStack itemStack = new ItemStack((Item) Item.itemRegistry.getObject(item), 1, meta);
-                itemStack.setTagCompound(readNBTFromBase64(nbt));
-                AEItemStack aeItemStack = AEItemStack.create(itemStack);
-                aeItemStack.setStackSize(count);
-                return new CraftingJobV2(worldObj, gridProxyable.getProxy().getGrid(), new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()), aeItemStack, CraftingMode.STANDARD, null);
+                // 目标可能是物品 / 流体 / 源质，见 buildTargetStack
+                IAEStack<?> target = buildTargetStack(item, meta, nbt, count);
+                return new CraftingJobV2(worldObj, gridProxyable.getProxy().getGrid(), new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()), target, CraftingMode.STANDARD, null);
             } catch (GridAccessException e) {
                 throw new RuntimeException(e);
             }
@@ -875,10 +1010,9 @@ public class TileAEMonitor extends TileEntity {
                 IGridProxyable gridProxyable = (IGridProxyable) tileEntity;
                 ICraftingGrid cg = null;
                 cg = gridProxyable.getProxy().getGrid().getCache(ICraftingGrid.class);
-                ItemStack itemStack = new ItemStack((Item) Item.itemRegistry.getObject(request.item_name), 1, request.meta);
-                itemStack.setTagCompound(readNBTFromBase64(request.getNbt()));
-                AEItemStack aeItemStack = AEItemStack.create(itemStack);
-                aeItemStack.setStackSize(request.count);
+                // 目标可能是物品 / 流体 / 源质（和 plan 用的是同一个翻译函数，
+                // 否则「计划能算、下单却按物品去下」会直接失败）
+                IAEStack<?> target = buildTargetStack(request.item_name, request.meta, request.getNbt(), request.count);
                 ICraftingGrid finalCg = cg;
                 Future<ICraftingJob> jobFuture;
                 if (finalCg instanceof CraftingGridCache) {
@@ -887,7 +1021,7 @@ public class TileAEMonitor extends TileEntity {
                             worldObj,
                             gridProxyable.getProxy().getGrid(),
                             new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()),
-                            aeItemStack,
+                            target,
                             request.allowMissing ? CraftingMode.IGNORE_MISSING : CraftingMode.STANDARD,
                             false, // liteMode=false: 走完整 CraftingJobV2 计算
                             null);
@@ -896,13 +1030,16 @@ public class TileAEMonitor extends TileEntity {
                             worldObj,
                             gridProxyable.getProxy().getGrid(),
                             new MachineSource((IActionHost) gridProxyable.getProxy().getMachine()),
-                            aeItemStack,
+                            target,
                             null);
                 }
                 int i = 0;
                 CraftingCPUCluster selected = null;
                 for (ICraftingCPU cpu : ((IGridProxyable) tileEntity).getProxy().getCrafting().getCpus()) {
-                    if (i == request.cpuId - 1) {
+                    // cpuId 就是 cpusOnce 里的 idx（从 0 开始，和 getCraftingStatus / cancelTask 一致）。
+                    // 以前这里写的是 cpuId - 1：选 0 号 CPU 永远匹配不上，selected 变 null 后
+                    // AE2 会随便挑一台（经常挑到正在忙的那台），App 上的「选 CPU」等于没生效。
+                    if (i == request.cpuId) {
                         selected = (CraftingCPUCluster) cpu;
                         break;
                     }
@@ -958,6 +1095,7 @@ public class TileAEMonitor extends TileEntity {
                         Object type = Class.forName("thaumicenergistics.common.storage.AEEssentiaStackType")
                                 .getField("ESSENTIA_STACK_TYPE").get(null);
                         Object mon = sg.getMEMonitor((appeng.api.storage.data.IAEStackType) type);
+                        ICraftingGrid craftingGrid = ((IGridProxyable) tileEntity).getProxy().getGrid().getCache(ICraftingGrid.class);
                         if (mon != null) {
                             for (Object st : (Iterable<?>) ((IMEMonitor) mon).getStorageList()) {
                                 Object aspect = st.getClass().getMethod("getAspect").invoke(st);
@@ -970,7 +1108,11 @@ public class TileAEMonitor extends TileEntity {
                                     if (c instanceof Integer) color = Integer.toString((Integer) c & 0xFFFFFF);
                                 } catch (Throwable ignored) {
                                 }
-                                essentia.add(new String[]{tag, nm, Long.toString(((IAEStack) st).getStackSize()), color});
+                                // isCraftable() 对源质不一定被维护，再兜一层「网络里有没有输出它的样板」
+                                IAEStack<?> es = (IAEStack<?>) st;
+                                boolean craftable = es.isCraftable() || hasPatternFor(craftingGrid, es);
+                                essentia.add(new String[]{tag, nm, Long.toString(es.getStackSize()), color,
+                                        craftable ? "1" : "0"});
                             }
                         }
                     } catch (Throwable ignored) {
@@ -1020,7 +1162,7 @@ public class TileAEMonitor extends TileEntity {
                     } catch (Throwable ignored) {
                     }
                     ItemStackResponse r = new ItemStackResponse();
-                    r.item_name = "ae2fc:fluid_drop";
+                    r.item_name = StreamState.FLUID_DROP;
                     r.meta = 0;
                     r.count = fluid.getStackSize();
                     r.craftable = fluid.isCraftable();
@@ -1039,14 +1181,16 @@ public class TileAEMonitor extends TileEntity {
                     } catch (Exception ignored) {
                     }
                     ItemStackResponse r = new ItemStackResponse();
-                    r.item_name = "thaumicenergistics:essentia";
+                    r.item_name = StreamState.ESSENTIA;
                     r.meta = 0;
                     try {
                         r.count = Long.parseLong(e[2]);
                     } catch (NumberFormatException ex) {
                         continue;
                     }
-                    r.craftable = false;
+                    // 以前写死 false，App 里所有要素都显示「不可合成」；
+                    // 现在按网络里是否有输出这个要素的样板（TE 的蒸馏样板）来标
+                    r.craftable = e.length > 4 && "1".equals(e[4]);
                     r.nbt = writeNBTAsBase64(tag);
                     r.displayname = e[1];
                     r.icon = "";

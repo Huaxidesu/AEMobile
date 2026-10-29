@@ -100,12 +100,23 @@ public final class StreamState {
     }
 
     /**
-     * 条目 key（带 NBT）。只有流体滴需要带 NBT —— 所有流体共用 {@code ae2fc:fluid_drop:0}
-     * 这一个 name+meta，不带 NBT 的话它们会在「当前状态」里互相覆盖，增量帧也会算错。
+     * 这类条目是不是「同一个 name+meta 下有很多种」——流体滴和源质都是。
+     *
+     * <p>增量帧里它们的行必须带 NBT：App 的 {@code itemKey()} 也是按
+     * {@code name|meta|nbt} 建索引的，少一位就会新建一条错误的行，旧的永远不更新。
+     */
+    public static boolean needsNbt(String name) {
+        return FLUID_DROP.equals(name) || ESSENTIA.equals(name);
+    }
+
+    /**
+     * 条目 key（带 NBT）。只有流体滴和源质需要带 NBT —— 所有流体共用
+     * {@code ae2fc:fluid_drop:0}、所有要素共用 {@code thaumicenergistics:essentia:0}，
+     * 不带 NBT 的话它们会在「当前状态」里互相覆盖，增量帧也会算错。
      * 其它物品（附魔装备、蜜蜂等）故意不带 NBT：否则几千个附魔剑会变成几千行。
      */
     public static String key(String name, int meta, String nbt) {
-        if (nbt != null && nbt.length() > 0 && (FLUID_DROP.equals(name) || ESSENTIA.equals(name))) {
+        if (nbt != null && nbt.length() > 0 && needsNbt(name)) {
             return name + "|" + meta + "|" + nbt;
         }
         return key(name, meta);

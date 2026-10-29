@@ -73,12 +73,12 @@ public final class FrameBuilder {
                 String k = StreamState.key(it.getItem_name(), it.getMeta(), it.getNbt());
                 long[] prev = st.items.get(k);
                 long craft = it.isCraftable() ? 1 : 0;
-                boolean fluid = StreamState.FLUID_DROP.equals(it.getItem_name());
+                // 流体滴 / 源质：同一个 name+meta 下有很多种，行里必须带 NBT
+                boolean needsNbt = StreamState.needsNbt(it.getItem_name());
                 if (prev == null) {
                     added.add(new Object[]{it.getItem_name(), it.getMeta(), it.getCount(), it.isCraftable(), it.getNbt()});
                 } else if (prev[0] != it.getCount() || prev[1] != craft) {
-                    // 流体滴必须带 NBT，否则客户端算不出是哪种流体
-                    changed.add(fluid
+                    changed.add(needsNbt
                             ? new Object[]{it.getItem_name(), it.getMeta(), it.getCount(), it.isCraftable(), it.getNbt()}
                             : new Object[]{it.getItem_name(), it.getMeta(), it.getCount(), it.isCraftable()});
                 }
