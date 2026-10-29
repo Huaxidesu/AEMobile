@@ -267,7 +267,9 @@ final class TcpConnection implements Runnable {
         }
 
         try {
+            long t0 = System.nanoTime();
             Map<String, Object> result = AeService.once(token, op, p);
+            Metrics.scan("req:" + op, (System.nanoTime() - t0) / 1000000L, Boolean.TRUE.equals(result.get("ok")));
             Object ok = result.get("ok");
             sendRes(id, Boolean.TRUE.equals(ok), result.get("b"), (String) result.get("m"), false);
         } catch (Exception e) {
@@ -346,14 +348,20 @@ final class TcpConnection implements Runnable {
         for (Sub sub : subs.values()) {
             if (sub.due > now) continue;
             sub.due = now + sub.intervalMs;
+            long t0 = System.nanoTime();
             try {
                 Map<String, Object> frame = AeService.pushFrame(token, sub.op, sub.params, sub.state);
+                long ms = (System.nanoTime() - t0) / 1000000L;
                 Map<String, Object> env = new LinkedHashMap<String, Object>();
                 env.put("s", sub.id);
                 env.put("f", frame);
-                sendFrame(Protocol.T_PUSH, env);
+                int bytes = sendFrame(Protocol.T_PUSH, env);
+                Object type = frame.get("t");
+                Metrics.scan(sub.op, ms, !"e".equals(type));
+                Metrics.frame(sub.op, String.valueOf(type), bytes);
             } catch (Exception e) {
                 // 主线程超时（区块没加载、服务器卡顿）：跳过这一帧，下一轮再试
+                Metrics.scan(sub.op, (System.nanoTime() - t0) / 1000000L, false);
                 AEMobile.debug("[AEMobile] 推送失败 " + sub.op + ": " + e);
             }
         }
@@ -363,22 +371,29 @@ final class TcpConnection implements Runnable {
         return System.currentTimeMillis() - lastSeen;
     }
 
+    /** 当前订阅数（统计用） */
+    int subCount() {
+        return subs.size();
+    }
+
     // ------------------------------------------------------------ 发送
 
-    private void sendFrame(int type, Object payload) {
-        if (closed) return;
+    /** 发一帧；返回 payload 字节数（0 表示连接已关），给统计用 */
+    private int sendFrame(int type, Object payload) {
+        if (closed) return 0;
         byte[] body = payload == null ? new byte[0] : Protocol.utf8(Json.write(payload));
         ByteArrayOutputStream bos = new ByteArrayOutputStream(body.length + 8);
         try {
             Protocol.write(new DataOutputStream(bos), type, body);
         } catch (IOException e) {
             close("encode");
-            return;
+            return 0;
         }
         if (!outbox.offer(bos.toByteArray())) {
             // 客户端不读数据（挂死的手机）：断开，别让队列无限涨
             close("outbox-full");
         }
+        return body.length;
     }
 
     private void sendErr(String message) {

@@ -17,6 +17,10 @@ public class ClientProxy extends CommonProxy {
         super.init(event);
         // /aemobile dumpicons —— 导出物品图标给 App 用（见 client/CommandDumpIcons）
         ClientCommandHandler.instance.registerCommand(new CommandDumpIcons());
+        // debug 命令桥的客户端通道：执行 cmd-client.txt 里的客户端命令（默认关闭）
+        dev.youtiao.aemobile.debug.DebugBridge.startClient(net.minecraft.client.Minecraft.getMinecraft().mcDataDir);
+        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                .register(new dev.youtiao.aemobile.debug.ClientDebugBridge());
     }
 
     // postInit "Handle interaction with other mods, complete your setup based on this."

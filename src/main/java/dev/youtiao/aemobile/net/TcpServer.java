@@ -117,7 +117,9 @@ public final class TcpServer {
     }
 
     private void tick() {
+        long t0 = System.nanoTime();
         long now = System.currentTimeMillis();
+        int subs = 0;
         for (TcpConnection conn : connections) {
             if (conn.isClosed()) {
                 connections.remove(conn);
@@ -129,10 +131,16 @@ public final class TcpServer {
             }
             try {
                 conn.pushDue();
+                subs += conn.subCount();
             } catch (Throwable t) {
                 // 单个连接出问题不能影响其它人
                 AEMobile.debug("[AEMobile] tick 异常：" + t);
             }
+        }
+        // 统计：这一轮调度花了多久、有多少连接/订阅（只累加计数，不改变行为）
+        Metrics.tick((System.nanoTime() - t0) / 1000000L, connections.size(), subs);
+        if (AEMobile.statsEnabled) {
+            Metrics.dump(dev.youtiao.aemobile.debug.DebugBridge.serverDir(), AEMobile.statsIntervalSec * 1000L);
         }
     }
 

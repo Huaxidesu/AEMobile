@@ -61,7 +61,8 @@ public class CommonProxy {
 
     // register server commands in this event handler
     public void serverStarting(FMLServerStartingEvent event) {
-
+        // /aemobile stats —— 打印 TCP 推送统计（扫描耗时 / 帧体积 / 调度占用）
+        event.registerServerCommand(new dev.youtiao.aemobile.command.CommandAEMobileServer());
     }
 
     public void serverStarted(FMLServerStartedEvent event) {
@@ -70,9 +71,14 @@ public class CommonProxy {
         // 不这么做的话，重启后没人走到监控器附近时 App 会误报「密码错误」。
         dev.youtiao.aemobile.net.MonitorRegistry.loadFromPlayerData();
         TcpServer.start(AEMobile.port);
+        // debug 命令桥（默认关闭）：把命令队列交给主线程执行，只能在 tick 里做
+        dev.youtiao.aemobile.debug.DebugBridge.startServer();
+        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                .register(new dev.youtiao.aemobile.debug.DebugBridge.ServerTickHandler());
     }
 
     public void serverStopping(FMLServerStoppingEvent event) {
+        dev.youtiao.aemobile.debug.DebugBridge.stop();
         TcpServer.stop();
     }
 
