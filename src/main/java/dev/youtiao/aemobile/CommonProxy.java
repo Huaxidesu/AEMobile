@@ -28,6 +28,9 @@ public class CommonProxy {
     public void preInit(FMLPreInitializationEvent event) 	{
         Config.syncronizeConfiguration(event.getSuggestedConfigurationFile());
 
+        // 世界显示名覆盖（config 的 [tps] names），只影响 TPS 页面里显示的名字
+        dev.youtiao.aemobile.metrics.WorldNames.setOverrides(Config.tpsNames);
+
         AEMobile.info(Config.greeting);
         AEMobile.info("I am " + Tags.MODNAME + " at version " + Tags.VERSION + " and group name " + Tags.GROUPNAME);
     }
@@ -71,6 +74,16 @@ public class CommonProxy {
         // 不这么做的话，重启后没人走到监控器附近时 App 会误报「密码错误」。
         dev.youtiao.aemobile.net.MonitorRegistry.loadFromPlayerData();
         TcpServer.start(AEMobile.port);
+        // TPS/MSPT 采集（总体 + 逐维度）：两个 TickEvent 都在主线程，只累加 long
+        dev.youtiao.aemobile.metrics.WorldNames.init(net.minecraft.server.MinecraftServer.getServer());
+        dev.youtiao.aemobile.metrics.TickStats.get().reset();
+        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                .register(dev.youtiao.aemobile.metrics.TickStats.get());
+        // 聊天通道：ServerChatEvent 在 Forge 总线上（不是 FML 总线），广播排空在 tick 上
+        dev.youtiao.aemobile.net.ChatHub.start();
+        MinecraftForge.EVENT_BUS.register(new dev.youtiao.aemobile.net.ChatHub.ChatListener());
+        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                .register(new dev.youtiao.aemobile.net.ChatHub.TickHandler());
         // debug 命令桥（默认关闭）：把命令队列交给主线程执行，只能在 tick 里做
         dev.youtiao.aemobile.debug.DebugBridge.startServer();
         cpw.mods.fml.common.FMLCommonHandler.instance().bus()
@@ -80,6 +93,8 @@ public class CommonProxy {
     public void serverStopping(FMLServerStoppingEvent event) {
         dev.youtiao.aemobile.debug.DebugBridge.stop();
         TcpServer.stop();
+        dev.youtiao.aemobile.net.ChatHub.stop();
+        dev.youtiao.aemobile.metrics.TickStats.get().reset();
     }
 
     public void serverStopped(FMLServerStoppedEvent event) {

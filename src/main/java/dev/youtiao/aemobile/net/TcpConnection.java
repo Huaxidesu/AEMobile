@@ -60,9 +60,12 @@ final class TcpConnection implements Runnable {
         final int id;
         final String op;
         final JsonNode params;
+        /** 只有 items/cpus/details/tps 用；chat 是纯追加流，不需要增量状态 */
         final StreamState state;
         final long intervalMs;
         volatile long due;
+        /** chat 专用：已经发到哪一条（服务端消息 seq） */
+        volatile long cursor;
 
         Sub(int id, String op, JsonNode params, StreamState state, long intervalMs) {
             this.id = id;
@@ -308,6 +311,25 @@ final class TcpConnection implements Runnable {
             return;
         }
 
+        // 聊天是纯追加流：不需要 StreamState / sid，游标（since）由客户端带上来，
+        // 重连时按 since 续传。boot 对不上说明服务端重启过（seq 归零），从头开始。
+        if ("chat".equals(op)) {
+            long since = Json.longOf(p, "since", 0L);
+            if (Json.longOf(p, "boot", 0L) != ChatHub.boot()) since = 0L;
+            int chatStreamId = streamSeq.incrementAndGet();
+            Sub chatSub = new Sub(chatStreamId, op, p, null, AeService.intervalOf(op));
+            chatSub.cursor = since;
+            chatSub.due = 0L;
+            subs.put(chatStreamId, chatSub);
+            ChatHub.addSubscriber();
+            Map<String, Object> cm = new LinkedHashMap<String, Object>();
+            cm.put("id", id);
+            cm.put("s", chatStreamId);
+            cm.put("sid", "");
+            sendFrame(Protocol.T_SUB_OK, cm);
+            return;
+        }
+
         // sid 由客户端带上来：断线重连时服务端能接着发增量，不用重建索引。
         // 先把「同 sid 的旧订阅」从其它连接上摘掉：旧连接可能只是半开（服务端还没超时），
         // 两边共用一份 StreamState 会让新客户端漏掉旧连接推进过的那部分变化。
@@ -330,13 +352,14 @@ final class TcpConnection implements Runnable {
     void detachStream(String sid) {
         if (sid == null) return;
         for (Sub sub : subs.values()) {
-            if (sid.equals(sub.state.sid)) subs.remove(sub.id);
+            if (sub.state != null && sid.equals(sub.state.sid)) subs.remove(sub.id);
         }
     }
 
     private void onUnsubscribe(Protocol.Frame frame) {
         JsonNode root = Json.read(frame.payload);
-        subs.remove(Json.intOf(root, "s", -1));
+        Sub sub = subs.remove(Json.intOf(root, "s", -1));
+        if (sub != null && "chat".equals(sub.op)) ChatHub.removeSubscriber();
     }
 
     // ------------------------------------------------------------ 推送
@@ -348,6 +371,20 @@ final class TcpConnection implements Runnable {
         for (Sub sub : subs.values()) {
             if (sub.due > now) continue;
             sub.due = now + sub.intervalMs;
+
+            // 聊天：按游标取增量，没有新消息就**不发帧**（空闲零流量）
+            if ("chat".equals(sub.op)) {
+                ChatHub.Batch batch = ChatHub.drain(sub.cursor, 40);
+                if (batch.frame == null) continue;
+                sub.cursor = batch.next;
+                Map<String, Object> chatEnv = new LinkedHashMap<String, Object>();
+                chatEnv.put("s", sub.id);
+                chatEnv.put("f", batch.frame);
+                int chatBytes = sendFrame(Protocol.T_PUSH, chatEnv);
+                Metrics.frame("chat", "c", chatBytes);
+                continue;
+            }
+
             long t0 = System.nanoTime();
             try {
                 Map<String, Object> frame = AeService.pushFrame(token, sub.op, sub.params, sub.state);
@@ -427,6 +464,9 @@ final class TcpConnection implements Runnable {
         try {
             socket.close();
         } catch (IOException ignored) {
+        }
+        for (Sub sub : subs.values()) {
+            if ("chat".equals(sub.op)) ChatHub.removeSubscriber();
         }
         subs.clear();
         server.remove(this);
