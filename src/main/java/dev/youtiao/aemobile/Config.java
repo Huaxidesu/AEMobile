@@ -17,12 +17,20 @@ public class Config {
         public static final int chatPerMinute = 30;
         public static final int chatBroadcastPerTick = 5;
         public static final boolean chatJoinLeave = true;
+        public static final boolean musicEnabled = true;
+        public static final String musicHost = "127.0.0.1";
+        public static final int musicPort = 44445;
+        public static final String musicSecret = "aemobile-music";
+        public static final String[] musicPrefixes = new String[]{"[AllMusic3]", "[肥猫电台]"};
+        /** 只有带这些标记的 AllMusic 消息才进公共聊天流（避免把别人的搜歌/帮助结果广播出去） */
+        public static final String[] musicPublicMarkers = new String[]{"正在播放"};
     }
 
     private static class Categories {
         public static final String general = "general";
         public static final String tps = "tps";
         public static final String chat = "chat";
+        public static final String music = "music";
     }
 
     public static String greeting = Defaults.greeting;
@@ -51,6 +59,17 @@ public class Config {
     /** 是否把玩家加入/退出也推给 App（只进手机，不广播游戏公屏） */
     public static boolean chatJoinLeave = Defaults.chatJoinLeave;
 
+    /** 音乐桥开关（BC/代理上的 AEMobileMusicBridge） */
+    public static boolean musicEnabled = Defaults.musicEnabled;
+    /** 桥接插件的地址：同机 127.0.0.1；BC 和后端分开部署时填代理内网 IP */
+    public static String musicHost = Defaults.musicHost;
+    public static int musicPort = Defaults.musicPort;
+    public static String musicSecret = Defaults.musicSecret;
+    /** AllMusic 聊天前缀，多个用 config 的 [music] prefixes 配；用于公开聊天识别与私有结果解析 */
+    public static String[] musicPrefixes = Defaults.musicPrefixes;
+    /** 只有带这些标记的 AllMusic 消息才进公共聊天（默认「正在播放」） */
+    public static String[] musicPublicMarkers = Defaults.musicPublicMarkers;
+
     public static void syncronizeConfiguration(File configFile) {
         Configuration configuration = new Configuration(configFile);
         configuration.load();
@@ -76,6 +95,20 @@ public class Config {
                 "Max messages broadcast into the game per server tick.");
         chatJoinLeave = configuration.getBoolean("joinLeave", Categories.chat, Defaults.chatJoinLeave,
                 "Forward player join/leave notices to the App chat stream (never broadcast into game chat).");
+
+        musicEnabled = configuration.getBoolean("enabled", Categories.music, Defaults.musicEnabled,
+                "Enable the music bridge (App song requests through the proxy plugin AEMobileMusicBridge).");
+        musicHost = configuration.getString("host", Categories.music, Defaults.musicHost,
+                "AEMobileMusicBridge host. 127.0.0.1 when proxy and backend run on the same machine.");
+        musicPort = configuration.getInt("port", Categories.music, Defaults.musicPort, 1, 65535,
+                "Local TCP port of AEMobileMusicBridge on the proxy.");
+        musicSecret = configuration.getString("secret", Categories.music, Defaults.musicSecret,
+                "Shared secret between this mod and AEMobileMusicBridge.");
+        musicPrefixes = configuration.getStringList("prefixes", Categories.music, Defaults.musicPrefixes,
+                "AllMusic chat prefixes to recognise (one per line), e.g. [AllMusic3] or [肥猫电台].");
+        musicPublicMarkers = configuration.getStringList("publicMarkers", Categories.music, Defaults.musicPublicMarkers,
+                "Only AllMusic messages containing one of these markers go to the public App chat (default: 正在播放).\n"
+                        + "Search/help/list responses are private to the requester via AEMobileMusicBridge.");
 
         if (configuration.hasChanged()) {
             configuration.save();

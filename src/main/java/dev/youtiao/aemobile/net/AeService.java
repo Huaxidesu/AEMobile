@@ -3,6 +3,7 @@ package dev.youtiao.aemobile.net;
 import appeng.crafting.v2.CraftingJobV2;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.youtiao.aemobile.AEMobile;
+import dev.youtiao.aemobile.Config;
 import dev.youtiao.aemobile.blocks.TileAEMonitor;
 import dev.youtiao.aemobile.metrics.TickStats;
 import net.minecraft.tileentity.TileEntity;
@@ -67,6 +68,12 @@ public final class AeService {
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final long PLAN_MIN_INTERVAL_MS = 800L;
     private static final int PLAN_PER_MINUTE = 30;
+
+    /** 音乐命令限速：单 token 300ms 一条、每分钟 30 条 */
+    private static final java.util.Map<String, long[]> MUSIC_RATE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long MUSIC_MIN_INTERVAL_MS = 1000L;
+    private static final int MUSIC_PER_MINUTE = 30;
 
     private AeService() {
     }
@@ -172,6 +179,41 @@ public final class AeService {
             } catch (ChatHub.ChatException e) {
                 return fail(e.getMessage());
             }
+        }
+
+        if ("music".equals(op)) {
+            // 音乐命令转发给代理上的 AEMobileMusicBridge；不碰 AE2、不依赖监控器坐标。
+            if (!Config.musicEnabled) return fail("MUSIC_DISABLED");
+            String player = MonitorRegistry.nameForToken(token);
+            if (player == null || player.isEmpty()) return fail("MUSIC_NO_PLAYER");
+
+            String cmd = Json.strOf(p, "cmd", "").trim().toLowerCase(java.util.Locale.ROOT);
+            if (cmd.isEmpty() || !cmd.matches("[a-z0-9]+")) return fail("BAD_COMMAND");
+
+            List<String> args = new ArrayList<String>();
+            JsonNode argsNode = p == null ? null : p.get("args");
+            if (argsNode != null && argsNode.isArray()) {
+                for (JsonNode n : argsNode) {
+                    if (n == null || n.isNull()) continue;
+                    String a = n.asText("").replace('\n', ' ').replace('\r', ' ').trim();
+                    if (a.length() > 80) a = a.substring(0, 80);
+                    if (!a.isEmpty()) args.add(a);
+                }
+            }
+            if (args.size() > 6) return fail("TOO_MANY_ARGS");
+
+            String limited = musicRateCheck(token);
+            if (limited != null) return fail(limited);
+
+            MusicBridge.Result r = MusicBridge.request(player, cmd, args);
+            Map<String, Object> body = new LinkedHashMap<String, Object>();
+            body.put("lines", r.lines);
+            body.put("online", r.online);
+            Map<String, Object> out = new LinkedHashMap<String, Object>();
+            out.put("ok", r.ok);
+            out.put("b", body);
+            out.put("m", r.error);
+            return out;
         }
 
         TileAEMonitor tile = tile(token, p);
@@ -394,8 +436,27 @@ public final class AeService {
      * 单个 token 的计划请求限速：两次之间至少 {@link #PLAN_MIN_INTERVAL_MS}，
      * 每分钟最多 {@link #PLAN_PER_MINUTE} 次。返回 null 表示放行，否则是要回给 App 的提示。
      */
-    private static String planRateCheck(String token) {
+    private static String musicRateCheck(String token) {
         long now = System.currentTimeMillis();
+        long[] st = MUSIC_RATE.get(token);
+        if (st == null) {
+            st = new long[]{0L, 0L, now};
+            MUSIC_RATE.put(token, st);
+        }
+        synchronized (st) {
+            if (now - st[2] >= 60_000L) {
+                st[2] = now;
+                st[1] = 0;
+            }
+            if (st[1] >= MUSIC_PER_MINUTE) return "RATE_LIMITED:音乐操作太频繁，请稍后再试";
+            if (now - st[0] < MUSIC_MIN_INTERVAL_MS) return "RATE_LIMITED:音乐操作太快了";
+            st[0] = now;
+            st[1]++;
+        }
+        return null;
+    }
+
+    private static String planRateCheck(String token) {        long now = System.currentTimeMillis();
         long[] st = PLAN_RATE.get(token);
         if (st == null) {
             st = new long[]{0L, 0L, now};

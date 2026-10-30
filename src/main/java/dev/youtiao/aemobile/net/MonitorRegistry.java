@@ -1,5 +1,7 @@
 package dev.youtiao.aemobile.net;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.blocks.TileAEMonitor;
 import net.minecraft.entity.player.EntityPlayer;
@@ -42,6 +44,8 @@ public final class MonitorRegistry {
     public static final String TOKEN_KEY = "aemobile_token";
     /** 玩家持久化 NBT 里的监控器坐标列表键，每项格式 "dimid,x,y,z" */
     public static final String MONITORS_KEY = "aemobile_monitors";
+    /** 玩家持久化 NBT 里最后登录的名字（离线时 App 点歌仍能用这个名字） */
+    public static final String LAST_NAME_KEY = "aemobile_last_name";
 
     /**
      * owner UUID → 当前 token。
@@ -50,6 +54,10 @@ public final class MonitorRegistry {
      * {@code TileAEMonitor.readFromNBT} 里覆盖，旧码才不会「复活」。
      */
     private static final Map<UUID, String> BY_OWNER = new ConcurrentHashMap<UUID, String>();
+    /** token → owner UUID（App 的 music 请求需要知道是谁在点歌） */
+    private static final Map<String, UUID> TOKEN_OWNER = new ConcurrentHashMap<String, UUID>();
+    /** owner UUID → 最后已知名字（离线也能用） */
+    private static final Map<UUID, String> LAST_NAME = new ConcurrentHashMap<UUID, String>();
 
     private MonitorRegistry() {
     }
@@ -65,6 +73,7 @@ public final class MonitorRegistry {
      */
     public static void rememberMonitor(EntityPlayer player, int dimid, int x, int y, int z) {
         if (player == null) return;
+        rememberName(player);
         NBTTagCompound data = player.getEntityData();
         NBTTagCompound persisted = data.getCompoundTag(EntityPlayer.PERSISTED_NBT_TAG);
         NBTTagList list = persisted.getTagList(MONITORS_KEY, 8);
@@ -75,6 +84,68 @@ public final class MonitorRegistry {
         list.appendTag(new NBTTagString(key));
         persisted.setTag(MONITORS_KEY, list);
         data.setTag(EntityPlayer.PERSISTED_NBT_TAG, persisted);
+    }
+
+    /** 把 token 绑定到 owner（放置监控器 / 重置 / 启动恢复时调） */
+    public static void bindToken(String token, UUID owner) {
+        if (token == null || token.isEmpty() || owner == null) return;
+        TOKEN_OWNER.put(token.toUpperCase(Locale.ROOT), owner);
+    }
+
+    /** 记住玩家最后登录名，离线点歌时用 */
+    public static void rememberName(EntityPlayer player) {
+        if (player == null) return;
+        UUID owner = player.getUniqueID();
+        String name = player.getCommandSenderName();
+        if (owner == null || name == null || name.isEmpty()) return;
+        LAST_NAME.put(owner, name);
+        NBTTagCompound data = player.getEntityData();
+        NBTTagCompound persisted = data.getCompoundTag(EntityPlayer.PERSISTED_NBT_TAG);
+        persisted.setString(LAST_NAME_KEY, name);
+        data.setTag(EntityPlayer.PERSISTED_NBT_TAG, persisted);
+    }
+
+    /**
+     * token → 玩家名。在线优先用当前名字，离线用最后一次登录名 / usercache。
+     * 返回 null 表示这个 token 没有 owner 记录（App 会提示先上线一次）。
+     */
+    public static String nameForToken(String token) {
+        if (token == null || token.isEmpty()) return null;
+        UUID owner = TOKEN_OWNER.get(token.toUpperCase(Locale.ROOT));
+        if (owner == null) return null;
+        MinecraftServer server = MinecraftServer.getServer();
+        if (server != null) {
+            for (World world : DimensionManager.getWorlds()) {
+                if (world == null || world.playerEntities == null) continue;
+                for (Object o : world.playerEntities) {
+                    if (o instanceof EntityPlayer && owner.equals(((EntityPlayer) o).getUniqueID())) {
+                        return ((EntityPlayer) o).getCommandSenderName();
+                    }
+                }
+            }
+        }
+        return LAST_NAME.get(owner);
+    }
+
+    /** 读服务端根目录的 usercache.json，补全历史玩家的名字 */
+    private static void loadUserCache(File root) {
+        try {
+            File file = new File(root, "usercache.json");
+            if (!file.isFile()) return;
+            JsonNode arr = new ObjectMapper().readTree(file);
+            if (arr == null || !arr.isArray()) return;
+            for (JsonNode n : arr) {
+                String name = n.path("name").asText("");
+                String id = n.path("uuid").asText("");
+                if (name.isEmpty() || id.isEmpty()) continue;
+                try {
+                    LAST_NAME.put(UUID.fromString(id), name);
+                } catch (Exception ignored) {
+                }
+            }
+        } catch (Throwable t) {
+            AEMobile.debug("[AEMobile] usercache 读取失败：" + t);
+        }
     }
 
     // ------------------------------------------------------------ 重置绑定码
@@ -100,6 +171,8 @@ public final class MonitorRegistry {
     /** 停服/切世界时清空，避免不同存档的 owner 表串档 */
     public static void clear() {
         BY_OWNER.clear();
+        TOKEN_OWNER.clear();
+        LAST_NAME.clear();
     }
 
     /**
@@ -158,7 +231,12 @@ public final class MonitorRegistry {
         AuthTokens.register(next);
         if (!old.isEmpty()) AuthTokens.unregister(old);
         TileAEMonitor.tilesInTheWorld.put(next, coords);
-        if (owner != null) BY_OWNER.put(owner, next);
+        if (owner != null) {
+            BY_OWNER.put(owner, next);
+            if (!old.isEmpty()) TOKEN_OWNER.remove(old);
+            TOKEN_OWNER.put(next, owner);
+            rememberName(player);
+        }
         restamp(coords, next);
         return new Reset(old, next, coords.size());
     }
@@ -209,6 +287,7 @@ public final class MonitorRegistry {
                 AEMobile.warn("[AEMobile] 找不到 playerdata 目录，token 表只能等区块加载后再建");
                 return;
             }
+            loadUserCache(worldDir.getParentFile());
 
             int tokens = 0;
             int monitors = 0;
@@ -238,7 +317,12 @@ public final class MonitorRegistry {
                 token = token.toUpperCase(Locale.ROOT);
                 AuthTokens.register(token);
                 UUID owner = ownerOf(file);
-                if (owner != null) BY_OWNER.put(owner, token);
+                if (owner != null) {
+                    BY_OWNER.put(owner, token);
+                    TOKEN_OWNER.put(token, owner);
+                    String lastName = persisted.getString(LAST_NAME_KEY);
+                    if (lastName != null && !lastName.isEmpty()) LAST_NAME.put(owner, lastName);
+                }
                 tokens++;
 
                 NBTTagList list = persisted.getTagList(MONITORS_KEY, 8);

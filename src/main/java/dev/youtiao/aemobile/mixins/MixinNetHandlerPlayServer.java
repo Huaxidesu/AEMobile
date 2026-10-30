@@ -26,7 +26,7 @@ public class MixinNetHandlerPlayServer {
         IChatComponent component = ((S02PacketChat) packet).func_148915_c();
         if (component == null) return;
         String plain = component.getUnformattedText();
-        if (plain != null && plain.contains("[AllMusic3]")) {
+        if (plain != null && ChatHub.isMusicText(plain) && ChatHub.isMusicPublicText(plain)) {
             ChatHub.captureServerChat(component);
         }
     }

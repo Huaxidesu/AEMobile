@@ -194,6 +194,7 @@ public final class ChatHub {
             if (!Config.chatEnabled || !Config.chatJoinLeave || !hasSubscribers()) return;
             if (event.player == null) return;
             String name = event.player.getCommandSenderName();
+            dev.youtiao.aemobile.net.MonitorRegistry.rememberName(event.player);
             append(KIND_JOIN, name, "");
             notePresence(name);
         }
@@ -389,13 +390,44 @@ public final class ChatHub {
             lastServerAt = now;
         }
 
-        // AllMusic 单独一类，App 用唱片图标；去掉文本里的 [AllMusic3] 前缀，避免和名字重复
-        if (plain.contains("[AllMusic3]")) {
-            String body = plain.replace("[AllMusic3]", "").trim();
+        // AllMusic 单独一类，App 用唱片图标；只把「正在播放」这类公开消息放进公共聊天，
+        // 搜索/帮助/队列结果由 AEMobileMusicBridge 私有返回，不能广播给所有人。
+        if (isMusicText(plain)) {
+            if (!isMusicPublicText(plain)) return;
+            String body = stripMusicPrefix(plain);
             append(KIND_MUSIC, "AllMusic", body.isEmpty() ? plain : body);
             return;
         }
         append(KIND_SERVER, "服务器", plain);
+    }
+
+    /** 文本是否带配置里的 AllMusic 前缀（[AllMusic3] / [肥猫电台] ...） */
+    public static boolean isMusicText(String plain) {
+        if (plain == null) return false;
+        for (String p : Config.musicPrefixes) {
+            if (p != null && !p.isEmpty() && plain.contains(p)) return true;
+        }
+        return false;
+    }
+
+    /** 是否是应该进公共聊天流的 AllMusic 消息（如「正在播放」），避免广播别人的搜索/帮助结果 */
+    public static boolean isMusicPublicText(String plain) {
+        if (plain == null) return false;
+        if (Config.musicPublicMarkers == null || Config.musicPublicMarkers.length == 0) return true;
+        for (String marker : Config.musicPublicMarkers) {
+            if (marker != null && !marker.isEmpty() && plain.contains(marker)) return true;
+        }
+        return false;
+    }
+
+    /** 去掉所有配置里的 AllMusic 前缀，并 trim */
+    static String stripMusicPrefix(String plain) {
+        if (plain == null) return "";
+        String out = plain;
+        for (String p : Config.musicPrefixes) {
+            if (p != null && !p.isEmpty()) out = out.replace(p, "");
+        }
+        return out.trim();
     }
 
     /** 记录一条玩家聊天，供服务器广播去重（netty 线程调用） */
