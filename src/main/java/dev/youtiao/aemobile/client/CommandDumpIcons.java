@@ -41,13 +41,17 @@ import java.util.Set;
  * 客户端命令：把图标数据导出给 App 的图标库用。
  *
  * <pre>
- * /aemobile dump all [尺寸]      物品 + 流体 + 源质 全导
- * /aemobile dump items [尺寸]    物品图标 PNG（默认 128px）
- * /aemobile dump fluids          流体颜色表
- * /aemobile dump aspects         源质颜色表
- * /aemobile dumpicons [list] [尺寸]   老入口 = dump items（list：只导 config/aemobile-dump-items.txt）
- * /aemobile dumpcolors           老入口 = dump fluids aspects
+ * /aemobileicons dump all [尺寸]      物品 + 流体 + 源质 全导
+ * /aemobileicons dump items [尺寸]    物品图标 PNG（默认 128px）
+ * /aemobileicons dump fluids          流体颜色表
+ * /aemobileicons dump aspects         源质颜色表
+ * /aemobileicons dumpicons [list] [尺寸]   老入口 = dump items（list：只导 config/aemobile-dump-items.txt）
+ * /aemobileicons dumpcolors           老入口 = dump fluids aspects
  * </pre>
+ *
+ * <p>命令名从 {@code /aemobile} 改成 {@code /aemobileicons}：{@code /aemobile} 让给服务端的
+ * 玩家命令（例如 {@code /aemobile token reset}）。客户端命令会抢在服务端前面处理，
+ * 不换名的话玩家在装了本 mod 的客户端上根本执行不到服务端版本。
  *
  * 产物：<游戏目录>/dumps/aemobile/
  *   items/<modid>/<item>_<meta>.png + manifest.jsonl
@@ -61,12 +65,12 @@ public class CommandDumpIcons extends CommandBase {
 
     @Override
     public String getCommandName() {
-        return "aemobile";
+        return "aemobileicons";
     }
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/aemobile dump <items|fluids|aspects|all> [尺寸]（dumpicons = dump items，dumpcolors = dump fluids aspects）";
+        return "/aemobileicons dump <items|fluids|aspects|all> [尺寸]（dumpicons = dump items，dumpcolors = dump fluids aspects）";
     }
 
     @Override
