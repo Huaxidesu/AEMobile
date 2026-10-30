@@ -55,7 +55,11 @@ public final class Json {
 
     public static boolean boolOf(JsonNode p, String key, boolean def) {
         JsonNode n = p == null ? null : p.get(key);
-        return n == null ? def : n.asBoolean(def);
+        if (n == null || n.isNull()) return def;
+        if (n.isBoolean()) return n.asBoolean(def);
+        // 兼容老文档/脚本写的 events:1
+        if (n.isInt() || n.isLong()) return n.asInt(0) != 0;
+        return n.asBoolean(def);
     }
 
     public static String strOf(JsonNode p, String key, String def) {

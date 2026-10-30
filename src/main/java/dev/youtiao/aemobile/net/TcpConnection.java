@@ -45,6 +45,7 @@ final class TcpConnection implements Runnable {
     private final DataInputStream in;
     private final DataOutputStream out;
     private final Object writeLock = new Object();
+    private final Object closeLock = new Object();
     private final ArrayBlockingQueue<byte[]> outbox = new ArrayBlockingQueue<byte[]>(OUTBOX_CAPACITY);
     private final Map<Integer, Sub> subs = new ConcurrentHashMap<Integer, Sub>();
     private final AtomicInteger streamSeq = new AtomicInteger();
@@ -208,7 +209,8 @@ final class TcpConnection implements Runnable {
             AEMobile.warn("[AEMobile] 鉴权失败：kid=" + kid + " 不存在（" + ip + "）");
         }
         for (String candidate : candidates) {
-            if (AuthTokens.matches(AuthTokens.sign(candidate, canonical), sig)) {
+            if (AuthTokens.matches(AuthTokens.sign(candidate, canonical), sig)
+                    && AuthTokens.isRegistered(candidate)) {
                 token = candidate;
                 AuthTokens.clearFailures(ip);
                 sendFrame(Protocol.T_AUTH_OK, null);
@@ -247,6 +249,10 @@ final class TcpConnection implements Runnable {
 
         if (token == null) {
             sendRes(id, false, null, "AUTH_REQUIRED", false);
+            return;
+        }
+        if (!AuthTokens.isRegistered(token)) {
+            close("token-revoked");
             return;
         }
 
@@ -302,6 +308,10 @@ final class TcpConnection implements Runnable {
 
         if (token == null) {
             sendRes(id, false, null, "AUTH_REQUIRED", false);
+            return;
+        }
+        if (!AuthTokens.isRegistered(token)) {
+            close("token-revoked");
             return;
         }
         if (!AeService.isStreamOp(op)) {
@@ -370,6 +380,10 @@ final class TcpConnection implements Runnable {
     /** 由定时器调用：把到期的订阅推出去 */
     void pushDue() {
         if (closed || token == null || subs.isEmpty()) return;
+        if (!AuthTokens.isRegistered(token)) {
+            close("token-revoked");
+            return;
+        }
         long now = System.currentTimeMillis();
         for (Sub sub : subs.values()) {
             if (sub.due > now) continue;
@@ -468,20 +482,22 @@ final class TcpConnection implements Runnable {
     // ------------------------------------------------------------ 关闭
 
     void close(String reason) {
-        if (closed) return;
-        closed = true;
-        if (!"EOF".equals(reason)) {
-            AEMobile.info("[AEMobile] TCP 断开 " + ip + " (" + reason + ")");
+        synchronized (closeLock) {
+            if (closed) return;
+            closed = true;
+            if (!"EOF".equals(reason)) {
+                AEMobile.info("[AEMobile] TCP 断开 " + ip + " (" + reason + ")");
+            }
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
+            for (Sub sub : subs.values()) {
+                if ("chat".equals(sub.op)) ChatHub.removeSubscriber();
+            }
+            subs.clear();
+            server.remove(this);
+            AEMobile.debug("[AEMobile] TCP 断开 " + ip + " (" + reason + ")");
         }
-        try {
-            socket.close();
-        } catch (IOException ignored) {
-        }
-        for (Sub sub : subs.values()) {
-            if ("chat".equals(sub.op)) ChatHub.removeSubscriber();
-        }
-        subs.clear();
-        server.remove(this);
-        AEMobile.debug("[AEMobile] TCP 断开 " + ip + " (" + reason + ")");
     }
 }

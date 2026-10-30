@@ -68,6 +68,9 @@ public class CommonProxy {
         event.registerServerCommand(new dev.youtiao.aemobile.command.CommandAEMobileServer());
     }
 
+    /** 事件处理器只注册一次：单机退出到主菜单再进另一个世界时 serverStarted 会再跑一遍 */
+    private static boolean eventsRegistered = false;
+
     public void serverStarted(FMLServerStartedEvent event) {
         // 协议 3.0.0：不再起 Spring/Tomcat，直接开 TCP 监听（端口见 config 的 [server] port）
         // 启动前先从 playerdata 恢复 token 表和监控器坐标表：
@@ -77,20 +80,23 @@ public class CommonProxy {
         // TPS/MSPT 采集（总体 + 逐维度）：两个 TickEvent 都在主线程，只累加 long
         dev.youtiao.aemobile.metrics.WorldNames.init(net.minecraft.server.MinecraftServer.getServer());
         dev.youtiao.aemobile.metrics.TickStats.get().reset();
-        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
-                .register(dev.youtiao.aemobile.metrics.TickStats.get());
-        // 聊天通道：ServerChatEvent 在 Forge 总线上（不是 FML 总线），广播排空在 tick 上
+        if (!eventsRegistered) {
+            cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                    .register(dev.youtiao.aemobile.metrics.TickStats.get());
+            // 聊天通道：ServerChatEvent 在 Forge 总线上（不是 FML 总线），广播排空在 tick 上
+            MinecraftForge.EVENT_BUS.register(new dev.youtiao.aemobile.net.ChatHub.ChatListener());
+            cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                    .register(new dev.youtiao.aemobile.net.ChatHub.TickHandler());
+            // 玩家加入/退出（只进 App 聊天流）
+            cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                    .register(new dev.youtiao.aemobile.net.ChatHub.PlayerEvents());
+            // debug 命令桥（默认关闭）：把命令队列交给主线程执行，只能在 tick 里做
+            cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                    .register(new dev.youtiao.aemobile.debug.DebugBridge.ServerTickHandler());
+            eventsRegistered = true;
+        }
         dev.youtiao.aemobile.net.ChatHub.start();
-        MinecraftForge.EVENT_BUS.register(new dev.youtiao.aemobile.net.ChatHub.ChatListener());
-        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
-                .register(new dev.youtiao.aemobile.net.ChatHub.TickHandler());
-        // 玩家加入/退出（只进 App 聊天流）
-        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
-                .register(new dev.youtiao.aemobile.net.ChatHub.PlayerEvents());
-        // debug 命令桥（默认关闭）：把命令队列交给主线程执行，只能在 tick 里做
         dev.youtiao.aemobile.debug.DebugBridge.startServer();
-        cpw.mods.fml.common.FMLCommonHandler.instance().bus()
-                .register(new dev.youtiao.aemobile.debug.DebugBridge.ServerTickHandler());
     }
 
     public void serverStopping(FMLServerStoppingEvent event) {
@@ -98,6 +104,10 @@ public class CommonProxy {
         TcpServer.stop();
         dev.youtiao.aemobile.net.ChatHub.stop();
         dev.youtiao.aemobile.metrics.TickStats.get().reset();
+        // 单机切世界是同一个 JVM：不清表会把上一张存档的 token 带进下一张
+        dev.youtiao.aemobile.net.AuthTokens.clear();
+        dev.youtiao.aemobile.net.MonitorRegistry.clear();
+        dev.youtiao.aemobile.blocks.TileAEMonitor.tilesInTheWorld.clear();
     }
 
     public void serverStopped(FMLServerStoppedEvent event) {

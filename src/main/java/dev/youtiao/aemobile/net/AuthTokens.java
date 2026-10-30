@@ -84,6 +84,19 @@ public final class AuthTokens {
         }
     }
 
+    /** token 是否仍然有效（重置绑定码后，旧连接用它自检） */
+    public static boolean isRegistered(String token) {
+        return token != null && !token.isEmpty() && ALL.contains(token.toUpperCase(Locale.ROOT));
+    }
+
+    /** 停服/切世界时清空整张表，避免不同存档的 token 串档 */
+    public static void clear() {
+        ALL.clear();
+        BY_KID.clear();
+        NONCES.clear();
+        FAILS.clear();
+    }
+
     /** token 的前 8 字符，作为请求头里的定位标识 */
     public static String kidOf(String token) {
         String t = token.toUpperCase(Locale.ROOT);

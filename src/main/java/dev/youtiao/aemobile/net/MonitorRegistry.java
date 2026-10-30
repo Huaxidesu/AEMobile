@@ -14,6 +14,8 @@ import net.minecraftforge.common.DimensionManager;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -95,6 +97,11 @@ public final class MonitorRegistry {
         return owner == null ? null : BY_OWNER.get(owner);
     }
 
+    /** 停服/切世界时清空，避免不同存档的 owner 表串档 */
+    public static void clear() {
+        BY_OWNER.clear();
+    }
+
     /**
      * 重置玩家的绑定码。
      *
@@ -132,6 +139,18 @@ public final class MonitorRegistry {
             if (p != null) coords.add(p);
         }
 
+        // 旧 tile 的 NBT / 崩溃残留可能给同一批坐标登记过别的 token，一并注销，
+        // 否则那些 token 仍能鉴权（TCP 连接自检也会兜底，但这里先把表清干净）。
+        List<String> staleTokens = new ArrayList<String>();
+        for (Map.Entry<String, Set<TileAEMonitor.PosTuple>> e : TileAEMonitor.tilesInTheWorld.entrySet()) {
+            if (e.getKey().equals(old) || e.getKey().equals(fallback)) continue;
+            if (e.getValue().removeAll(coords)) staleTokens.add(e.getKey());
+        }
+        for (String stale : staleTokens) {
+            AuthTokens.unregister(stale);
+            TileAEMonitor.tilesInTheWorld.remove(stale);
+        }
+
         String next = AuthTokens.generate();
         persisted.setString(TOKEN_KEY, next);
         data.setTag(EntityPlayer.PERSISTED_NBT_TAG, persisted);
@@ -140,7 +159,6 @@ public final class MonitorRegistry {
         if (!old.isEmpty()) AuthTokens.unregister(old);
         TileAEMonitor.tilesInTheWorld.put(next, coords);
         if (owner != null) BY_OWNER.put(owner, next);
-
         restamp(coords, next);
         return new Reset(old, next, coords.size());
     }

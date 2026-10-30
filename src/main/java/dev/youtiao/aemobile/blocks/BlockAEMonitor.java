@@ -63,7 +63,7 @@ public class BlockAEMonitor extends Block implements ITileEntityProvider {
                 String token = tokenOf(player);
                 tileEntity.setToken(token);
                 dev.youtiao.aemobile.net.AuthTokens.register(token);
-                TileAEMonitor.tilesInTheWorld.computeIfAbsent(token, (e) -> new HashSet<>());
+                TileAEMonitor.tilesInTheWorld.computeIfAbsent(token, (e) -> java.util.concurrent.ConcurrentHashMap.newKeySet());
                 TileAEMonitor.tilesInTheWorld.get(token).add(tileEntity.getPosTuple());
                 // 坐标也写进玩家持久化 NBT：服务端重启后不用等区块加载就能恢复注册表
                 dev.youtiao.aemobile.net.MonitorRegistry.rememberMonitor(
