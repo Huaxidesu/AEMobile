@@ -54,7 +54,9 @@ final class ChatFormat {
 
     private static String sanitize(String raw, int max, boolean isName, boolean allowCodes) {
         if (raw == null) return "";
-        StringBuilder b = new StringBuilder(Math.min(raw.length(), max + 16));
+        // 用 long 算容量：plain() 传的是 Integer.MAX_VALUE，直接 +16 会溢出成负数
+        int cap = (int) Math.min((long) raw.length(), (long) max + 16L);
+        StringBuilder b = new StringBuilder(Math.max(16, cap));
         int count = 0;
         for (int i = 0; i < raw.length(); ) {
             int cp = raw.codePointAt(i);
@@ -95,9 +97,9 @@ final class ChatFormat {
         return b.toString().trim();
     }
 
-    /** 去掉所有颜色码，给过滤/去重/日志用 */
+    /** 去掉所有颜色码，给过滤/去重/日志用（上限给足，别用 MAX_VALUE 去算容量） */
     static String plain(String raw) {
-        return sanitize(raw, Integer.MAX_VALUE, false, false);
+        return sanitize(raw, 8192, false, false);
     }
 
     private static boolean isColorOrStyle(char c) {
