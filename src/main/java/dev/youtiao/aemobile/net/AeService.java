@@ -205,14 +205,30 @@ public final class AeService {
             String limited = musicRateCheck(token);
             if (limited != null) return fail(limited);
 
-            MusicBridge.Result r = MusicBridge.request(player, cmd, args);
+            StringBuilder command = new StringBuilder("music ").append(cmd);
+            for (String a : args) command.append(' ').append(a);
+            int captureMs = "search".equals(cmd) ? 3500 : 800;
+            ProxyBridge.Result r = ProxyBridge.exec(player, command.toString(), captureMs);
+
+            boolean ok = r.ok;
+            String error = r.error;
+            // AllMusic 在“服务器没有音乐会话”时是正常返回（ok=true），这里转成 App 能识别的 code
+            if (error == null) {
+                for (String line : r.lines) {
+                    if (line != null && line.contains("没有播放的玩家")) {
+                        ok = false;
+                        error = "NO_MUSIC_SESSION";
+                        break;
+                    }
+                }
+            }
             Map<String, Object> body = new LinkedHashMap<String, Object>();
             body.put("lines", r.lines);
             body.put("online", r.online);
             Map<String, Object> out = new LinkedHashMap<String, Object>();
-            out.put("ok", r.ok);
+            out.put("ok", ok);
             out.put("b", body);
-            out.put("m", r.error);
+            out.put("m", error);
             return out;
         }
 

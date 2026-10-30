@@ -17,48 +17,59 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * App 音乐请求 → 代理上的 AEMobileMusicBridge。
+ * 通用代理命令桥客户端：App/后端 mod → 代理上的 AEMobileBridge → 代理命令。
  *
  * <p>AllMusic 的 BC 版命令只存在于代理进程，后端的 Forge 只能通过这个 localhost 小桥转发。
- * 桥接插件用捕获型 CommandSender 执行 {@code /music ...}，把返回文本私有地回给 App。
+ * 桥接插件用捕获型 CommandSender 执行命令，把返回文本私有地回给 App。
+ *
+ * <p>目前音乐点歌用它执行 {@code music ...}；以后别的代理功能可以复用 {@link #exec}，
+ * 只要在桥接插件的 {@code allow-commands} 里加上命令根。
  */
-public final class MusicBridge {
+public final class ProxyBridge {
 
     public static final class Result {
         public final boolean ok;
+        public final boolean found;
         public final String error;
         public final boolean online;
         public final List<String> lines;
 
-        Result(boolean ok, String error, boolean online, List<String> lines) {
+        Result(boolean ok, boolean found, String error, boolean online, List<String> lines) {
             this.ok = ok;
+            this.found = found;
             this.error = error;
             this.online = online;
             this.lines = lines;
         }
     }
 
-    private MusicBridge() {
+    private ProxyBridge() {
     }
 
-    public static Result request(String player, String cmd, List<String> args) {
-        if (!Config.musicEnabled) {
-            return new Result(false, "MUSIC_DISABLED", false, new ArrayList<String>());
+    /**
+     * @param player    以谁的身份执行（在线用真实玩家，离线用最后一次登录名）
+     * @param command   不带前导 / 的命令，例如 {@code "music search 晴天"}
+     * @param captureMs 命令返回后继续收集聊天的时间；异步命令（搜歌）传 3500
+     */
+    public static Result exec(String player, String command, int captureMs) {
+        if (!Config.bridgeEnabled) {
+            return new Result(false, false, "BRIDGE_DISABLED", false, new ArrayList<String>());
         }
         if (player == null || player.isEmpty()) {
-            return new Result(false, "MUSIC_NO_PLAYER", false, new ArrayList<String>());
+            return new Result(false, false, "BRIDGE_NO_PLAYER", false, new ArrayList<String>());
         }
 
         Map<String, Object> req = new LinkedHashMap<String, Object>();
-        req.put("secret", Config.musicSecret);
+        req.put("op", "exec");
+        req.put("secret", Config.bridgeSecret);
         req.put("player", player);
-        req.put("cmd", cmd);
-        req.put("args", args == null ? new ArrayList<String>() : args);
+        req.put("command", command);
+        req.put("captureMs", captureMs);
 
         Socket socket = new Socket();
         try {
-            socket.connect(new InetSocketAddress(Config.musicHost, Config.musicPort), 2000);
-            socket.setSoTimeout(8000);
+            socket.connect(new InetSocketAddress(Config.bridgeHost, Config.bridgePort), 2000);
+            socket.setSoTimeout(12000);
             PrintWriter out = new PrintWriter(
                     new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
             out.println(Json.write(req));
@@ -67,12 +78,13 @@ public final class MusicBridge {
             BufferedReader in = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
             String line = in.readLine();
-            if (line == null) return new Result(false, "MUSIC_NO_RESPONSE", false, new ArrayList<String>());
+            if (line == null) return new Result(false, false, "BRIDGE_NO_RESPONSE", false, new ArrayList<String>());
 
             JsonNode node = Json.read(line);
-            if (node == null) return new Result(false, "MUSIC_BAD_RESPONSE", false, new ArrayList<String>());
+            if (node == null) return new Result(false, false, "BRIDGE_BAD_RESPONSE", false, new ArrayList<String>());
 
             boolean ok = node.path("ok").asBoolean(false);
+            boolean found = node.path("found").asBoolean(ok);
             String error = node.path("error").isNull() ? null : node.path("error").asText(null);
             boolean online = node.path("online").asBoolean(false);
             List<String> lines = new ArrayList<String>();
@@ -82,20 +94,10 @@ public final class MusicBridge {
                     if (n != null && !n.isNull()) lines.add(n.asText(""));
                 }
             }
-            // AllMusic 的“没有播放的玩家”是服务器没有音乐会话（不是命令错），给 App 一个稳定 code
-            if (error == null) {
-                for (String l : lines) {
-                    if (l != null && l.contains("没有播放的玩家")) {
-                        ok = false;
-                        error = "NO_MUSIC_SESSION";
-                        break;
-                    }
-                }
-            }
-            return new Result(ok, error, online, lines);
+            return new Result(ok, found, error, online, lines);
         } catch (Throwable t) {
-            AEMobile.debug("[AEMobile] music bridge 失败：" + t);
-            return new Result(false, "MUSIC_UNAVAILABLE", false, new ArrayList<String>());
+            AEMobile.debug("[AEMobile] bridge 失败：" + t);
+            return new Result(false, false, "BRIDGE_UNAVAILABLE", false, new ArrayList<String>());
         } finally {
             try {
                 socket.close();
