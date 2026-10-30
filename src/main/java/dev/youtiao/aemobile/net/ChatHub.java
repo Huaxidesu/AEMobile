@@ -437,7 +437,7 @@ public final class ChatHub {
             lastServerAt = now;
         }
 
-        String text = ChatFormat.sanitizeColored(component.getFormattedText(),
+        String text = ChatFormat.sanitizeColored(formattedText(component),
                 Math.max(Config.chatMaxText * 2, 512), false);
         if (text.isEmpty()) text = plain;
 
@@ -457,6 +457,26 @@ public final class ChatHub {
         synchronized (APP_NAMES) {
             return new ArrayList<String>(APP_NAMES);
         }
+    }
+
+    /**
+     * 拿「带 {@code §} 颜色码」的文本。
+     *
+     * <p>不能直接写 {@code component.getFormattedText()}：这个方法在 reobf 后
+     * 运行时找不到（{@code NoSuchMethodError: func_150254_d}），一调就把整条
+     * 服务器广播链路打断。这里走反射，MCP 名和 SRG 名各试一次，
+     * 都拿不到就退回纯文本（颜色丢了但消息还在）。
+     */
+    private static String formattedText(IChatComponent component) {
+        for (String name : new String[]{"getFormattedText", "func_150254_d"}) {
+            try {
+                java.lang.reflect.Method m = component.getClass().getMethod(name);
+                Object v = m.invoke(component);
+                if (v instanceof String) return (String) v;
+            } catch (Throwable ignored) {
+            }
+        }
+        return component.getUnformattedText();
     }
 
     /** 文本是否带配置里的 AllMusic 前缀（[AllMusic3] / [肥猫电台] ...） */
