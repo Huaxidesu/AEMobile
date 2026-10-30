@@ -3,6 +3,7 @@ package dev.youtiao.aemobile.command;
 import dev.youtiao.aemobile.debug.DebugBridge;
 import dev.youtiao.aemobile.metrics.TickStats;
 import dev.youtiao.aemobile.metrics.WorldNames;
+import dev.youtiao.aemobile.net.ChatHub;
 import dev.youtiao.aemobile.net.Metrics;
 import net.minecraft.command.CommandBase;
 import net.minecraft.command.ICommandSender;
@@ -52,7 +53,7 @@ public class CommandAEMobileServer extends CommandBase {
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/aemobile token reset | stats [reset] | tps | dims | say <text>";
+        return "/aemobile token reset | stats [reset] | tps | dims | say <text> | debug <类型> <名字> [内容]";
     }
 
     /**
@@ -96,6 +97,10 @@ public class CommandAEMobileServer extends CommandBase {
         }
         if ("say".equals(sub)) {
             broadcastTest(sender, args);
+            return;
+        }
+        if ("debug".equals(sub)) {
+            debugInject(sender, args);
             return;
         }
         if (!"stats".equals(sub)) {
@@ -184,6 +189,53 @@ public class CommandAEMobileServer extends CommandBase {
         server.getConfigurationManager().sendChatMsg(new ChatComponentText(sb.toString()));
         sender.addChatMessage(new ChatComponentText(EnumChatFormatting.GREEN
                 + "[AEMobile] 已广播：" + sb));
+    }
+
+    // ------------------------------------------------------------ debug 注入
+
+    /**
+     * {@code /aemobile debug <类型> <名字> [内容]}：直接往聊天流里造一条消息。
+     *
+     * <p>本机测试服没有真实玩家时，`ServerChatEvent` / `AchievementEvent` / 进出事件都走不到，
+     * 手机端就没法验证。这里绕过事件源直接塞给 {@code ChatHub}，
+     * App 收到的东西和真玩家发的一样（同样的 kind、同样的颜色码处理）。
+     *
+     * <p>类型：{@code chat}（游戏公屏）/ {@code app}（手机）/ {@code join} / {@code leave}
+     * / {@code server}（服务器广播）/ {@code achievement}（成就，内容是成就名）。
+     */
+    private void debugInject(ICommandSender sender, String[] args) {
+        if (args.length < 3) {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 用法：/aemobile debug chat|app|join|leave|server|achievement <名字> [内容]"));
+            return;
+        }
+        String what = args[1].toLowerCase(Locale.ROOT);
+        int kind;
+        if ("chat".equals(what)) kind = ChatHub.KIND_GAME;
+        else if ("app".equals(what)) kind = ChatHub.KIND_APP;
+        else if ("join".equals(what)) kind = ChatHub.KIND_JOIN;
+        else if ("leave".equals(what)) kind = ChatHub.KIND_LEAVE;
+        else if ("server".equals(what)) kind = ChatHub.KIND_SERVER;
+        else if ("achievement".equals(what)) kind = ChatHub.KIND_ACHIEVEMENT;
+        else {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 未知类型：" + what
+                    + "（chat/app/join/leave/server/achievement）"));
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 3; i < args.length; i++) {
+            if (i > 3) sb.append(' ');
+            sb.append(args[i]);
+        }
+        long seq = ChatHub.inject(kind, args[2], sb.toString());
+        if (seq < 0) {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 聊天功能没开（config [chat] enabled=false）"));
+            return;
+        }
+        sender.addChatMessage(new ChatComponentText(EnumChatFormatting.GREEN
+                + "[AEMobile] 已注入 kind=" + kind + " seq=" + seq + " 名=" + args[2]));
     }
 
     // ------------------------------------------------------------ tps

@@ -460,6 +460,22 @@ public final class ChatHub {
     }
 
     /**
+     * 调试注入：直接往聊天流里塞一条，**绕过事件源**。
+     *
+     * <p>本机测试服没有真实玩家时，`ServerChatEvent` / `AchievementEvent` / 进出事件都走不到，
+     * 手机端就没法验证。这个入口让 {@code /aemobile debug} 直接造一条消息，
+     * App 侧收到的东西和真玩家发的一模一样（同样的 kind、同样的颜色码处理）。
+     * 只用于测试，不进任何正式链路。
+     */
+    public static long inject(int kind, String rawName, String rawText) {
+        if (!Config.chatEnabled) return -1L;
+        String name = ChatFormat.sanitizeName(rawName, Config.chatMaxName);
+        String text = ChatFormat.sanitizeColored(rawText, Config.chatMaxText, false);
+        if (name.isEmpty()) name = "Tester";
+        return append(kind, name, text);
+    }
+
+    /**
      * 拿「带 {@code §} 颜色码」的文本。
      *
      * <p>不能直接写 {@code component.getFormattedText()}：这个方法在 reobf 后
