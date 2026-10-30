@@ -7,6 +7,7 @@ import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.Config;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.ChatComponentText;
+import net.minecraft.util.ChatComponentTranslation;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
 import net.minecraftforge.event.ServerChatEvent;
@@ -54,6 +55,10 @@ public final class ChatHub {
     public static final int KIND_JOIN = 2;
     /** 玩家离开服务器 */
     public static final int KIND_LEAVE = 3;
+    /** 服务器/插件广播的聊天（公告、/say、AutoMessage 等） */
+    public static final int KIND_SERVER = 4;
+    /** AllMusic 的点歌/播放消息，App 用唱片图标 */
+    public static final int KIND_MUSIC = 5;
 
     /** 投递缓冲条数（不是历史存储） */
     private static final int BUFFER = 128;
@@ -63,6 +68,23 @@ public final class ChatHub {
     private static final int MAX_PER_FRAME = 40;
     /** 广播队列上限：刷屏时丢弃，别让主线程被拖住 */
     private static final int OUTBOX_MAX = 200;
+    /** 服务器广播去重窗口 */
+    private static final long SERVER_DEDUPE_MS = 800L;
+    /** 玩家聊天 / 进出的广播回显去重窗口 */
+    private static final long PLAYER_DEDUPE_MS = 2500L;
+    private static final int RECENT_MAX = 8;
+
+    /** 这个线程正在广播 App 消息：不要把它当成服务器聊天再抓一遍 */
+    private static final ThreadLocal<Boolean> APP_BROADCAST = new ThreadLocal<Boolean>();
+    /** 最近玩家聊天文本，用来去掉 MiaoChat/原版对同一条聊天的二次广播 */
+    private static final ArrayDeque<String[]> RECENT_PLAYER_CHAT = new ArrayDeque<String[]>();
+    /** 最近加入/退出的玩家名，用来去掉原版进出提示的二次广播 */
+    private static final ArrayDeque<String[]> RECENT_PRESENCE = new ArrayDeque<String[]>();
+    private static volatile String lastServerText = "";
+    private static volatile long lastServerAt = 0L;
+    /** 命令回显：`?/spawn`、`<name> /home` 这类，只有命令真的存在才过滤 */
+    private static final java.util.regex.Pattern CMD_ECHO = java.util.regex.Pattern.compile(
+            "(?i)^\\s*(?:\\[[^\\]]*\\]\\s*)*(?:<[^>]*>\\s*:?\\s*)?\\??/([A-Za-z0-9_\\-:]+)");
 
     /** 一条消息（不可变） */
     public static final class Msg {
@@ -157,6 +179,8 @@ public final class ChatHub {
             if (!Config.chatEnabled || !hasSubscribers()) return;
             if (event.player == null || event.message == null) return;
             append(KIND_GAME, event.player.getCommandSenderName(), event.message);
+            // 记下来：原版/插件可能紧接着把同一条聊天再广播一次
+            notePlayerChat(event.message);
         }
     }
 
@@ -169,14 +193,18 @@ public final class ChatHub {
         public void onJoin(PlayerEvent.PlayerLoggedInEvent event) {
             if (!Config.chatEnabled || !Config.chatJoinLeave || !hasSubscribers()) return;
             if (event.player == null) return;
-            append(KIND_JOIN, event.player.getCommandSenderName(), "");
+            String name = event.player.getCommandSenderName();
+            append(KIND_JOIN, name, "");
+            notePresence(name);
         }
 
         @SubscribeEvent
         public void onLeave(PlayerEvent.PlayerLoggedOutEvent event) {
             if (!Config.chatEnabled || !Config.chatJoinLeave || !hasSubscribers()) return;
             if (event.player == null) return;
-            append(KIND_LEAVE, event.player.getCommandSenderName(), "");
+            String name = event.player.getCommandSenderName();
+            append(KIND_LEAVE, name, "");
+            notePresence(name);
         }
     }
 
@@ -237,7 +265,13 @@ public final class ChatHub {
         ChatComponentText body = new ChatComponentText(text);
         head.appendSibling(who).appendSibling(body);
 
-        server.getConfigurationManager().sendChatMsg((IChatComponent) head);
+        // 这条广播是 App 自己发的，captureServerChat 不要再当成服务器聊天收一遍
+        APP_BROADCAST.set(Boolean.TRUE);
+        try {
+            server.getConfigurationManager().sendChatMsg((IChatComponent) head);
+        } finally {
+            APP_BROADCAST.remove();
+        }
         // 服务端日志留档，便于事后查水表（聊天本身不存储）
         AEMobile.info("[AEMobile][聊天] " + name + ": " + text);
     }
@@ -291,7 +325,7 @@ public final class ChatHub {
                 if (m.seq <= since) continue;
                 // 游标必须越过被过滤掉的事件，否则关掉进出提示后每帧都从同一条开始扫
                 next = m.seq;
-                if (!includeEvents && (m.kind == KIND_JOIN || m.kind == KIND_LEAVE)) continue;
+                if (!includeEvents && m.kind >= KIND_JOIN) continue;
                 rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts});
                 if (rows.size() >= max) break;
             }
@@ -305,6 +339,104 @@ public final class ChatHub {
         if (gap) frame.put("gap", 1);
         frame.put("m", rows);
         return new Batch(frame, next);
+    }
+
+    // ------------------------------------------------------------ 收：服务器广播
+
+    /**
+     * 服务器/插件广播的聊天（公告、/say、AutoMessage 等）。
+     *
+     * <p>由 {@code MixinServerConfigurationManager} 在 {@code sendChatMsg} 头部调用。
+     * 主线程执行；只做过滤和入环，真正发帧还是 ticker 线程。
+     *
+     * <p>过滤：
+     * <ul>
+     *   <li>App 自己发的广播（{@link #APP_BROADCAST}）—— 它已经以 kind 1 入环；</li>
+     *   <li>玩家聊天/进出的二次广播 —— 已有 kind 0/2/3，靠最近的文本/名字去重；</li>
+     *   <li>可执行命令的回显（{@code ?/spawn}、{@code <name> /home}）—— 命令存在于服务端才过滤，
+     *       未知命令（不可执行）照常显示；</li>
+     *   <li>800ms 内完全相同的重复广播。</li>
+     * </ul>
+     */
+    public static void captureServerChat(IChatComponent component) {
+        if (!Config.chatEnabled || !hasSubscribers() || component == null) return;
+        if (Boolean.TRUE.equals(APP_BROADCAST.get())) return;
+
+        if (component instanceof ChatComponentTranslation) {
+            String key = ((ChatComponentTranslation) component).getKey();
+            if (key != null) {
+                // 玩家聊天已有 kind 0；进/出已有 kind 2/3，别重复
+                if ("chat.type.text".equals(key)
+                        || "multiplayer.player.joined".equals(key)
+                        || "multiplayer.player.left".equals(key)) {
+                    return;
+                }
+            }
+        }
+
+        String plain = component.getUnformattedText();
+        if (plain == null) return;
+        plain = sanitize(plain, Math.max(Config.chatMaxText * 2, 512), false);
+        if (plain.isEmpty()) return;
+        if (containsRecent(RECENT_PLAYER_CHAT, plain, PLAYER_DEDUPE_MS)) return;
+        if (containsRecent(RECENT_PRESENCE, plain, PLAYER_DEDUPE_MS)) return;
+        if (isExecutableCommandEcho(plain)) return;
+
+        long now = System.currentTimeMillis();
+        synchronized (ChatHub.class) {
+            if (plain.equals(lastServerText) && now - lastServerAt < SERVER_DEDUPE_MS) return;
+            lastServerText = plain;
+            lastServerAt = now;
+        }
+
+        // AllMusic 单独一类，App 用唱片图标；去掉文本里的 [AllMusic3] 前缀，避免和名字重复
+        if (plain.contains("[AllMusic3]")) {
+            String body = plain.replace("[AllMusic3]", "").trim();
+            append(KIND_MUSIC, "AllMusic", body.isEmpty() ? plain : body);
+            return;
+        }
+        append(KIND_SERVER, "服务器", plain);
+    }
+
+    /** 记录一条玩家聊天，供服务器广播去重（netty 线程调用） */
+    static void notePlayerChat(String text) {
+        pushRecent(RECENT_PLAYER_CHAT, text);
+    }
+
+    /** 记录一次玩家进出，供原版进出广播去重（主线程调用） */
+    static void notePresence(String name) {
+        pushRecent(RECENT_PRESENCE, name);
+    }
+
+    private static void pushRecent(ArrayDeque<String[]> queue, String text) {
+        if (text == null || text.isEmpty()) return;
+        synchronized (queue) {
+            queue.addLast(new String[]{text, String.valueOf(System.currentTimeMillis())});
+            while (queue.size() > RECENT_MAX) queue.pollFirst();
+        }
+    }
+
+    private static boolean containsRecent(ArrayDeque<String[]> queue, String plain, long windowMs) {
+        long now = System.currentTimeMillis();
+        synchronized (queue) {
+            for (String[] row : queue) {
+                if (now - Long.parseLong(row[1]) <= windowMs && plain.contains(row[0])) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 命令回显过滤：只在命令**真的存在**时过滤。
+     * {@code ?/spawn}、{@code <Steve> /home} 这类会被隐藏；{@code ?/notacommand} 照常显示。
+     */
+    private static boolean isExecutableCommandEcho(String plain) {
+        java.util.regex.Matcher m = CMD_ECHO.matcher(plain);
+        if (!m.find()) return false;
+        MinecraftServer server = MinecraftServer.getServer();
+        if (server == null || server.getCommandManager() == null) return false;
+        String cmd = m.group(1).toLowerCase(java.util.Locale.ROOT);
+        return server.getCommandManager().getCommands().containsKey(cmd);
     }
 
     // ------------------------------------------------------------ 内部

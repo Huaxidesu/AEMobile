@@ -52,7 +52,7 @@ public class CommandAEMobileServer extends CommandBase {
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/aemobile token reset | stats [reset] | tps | dims";
+        return "/aemobile token reset | stats [reset] | tps | dims | say <text>";
     }
 
     /**
@@ -92,6 +92,10 @@ public class CommandAEMobileServer extends CommandBase {
         }
         if ("dims".equals(sub)) {
             reportDims(sender);
+            return;
+        }
+        if ("say".equals(sub)) {
+            broadcastTest(sender, args);
             return;
         }
         if (!"stats".equals(sub)) {
@@ -153,6 +157,33 @@ public class CommandAEMobileServer extends CommandBase {
                 + "[AEMobile] 已同步 " + reset.monitors + " 个监控器"));
         dev.youtiao.aemobile.AEMobile.info("[AEMobile] " + player.getCommandSenderName()
                 + " 重置了绑定码（" + reset.monitors + " 个监控器）");
+    }
+
+    // ------------------------------------------------------------ say
+    /**
+     * {@code /aemobile say <text>}：从服务端广播一行聊天，用来验证「服务器聊天进 App」。
+     * 权限 2；真正的广播还是走 {@code sendChatMsg}，所以顺带覆盖了 Mixin 的抓取路径。
+     */
+    private void broadcastTest(ICommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 用法：/aemobile say <text>"));
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 1; i < args.length; i++) {
+            if (i > 1) sb.append(' ');
+            sb.append(args[i]);
+        }
+        MinecraftServer server = MinecraftServer.getServer();
+        if (server == null || server.getConfigurationManager() == null) {
+            sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED
+                    + "[AEMobile] 服务器还没准备好"));
+            return;
+        }
+        server.getConfigurationManager().sendChatMsg(new ChatComponentText(sb.toString()));
+        sender.addChatMessage(new ChatComponentText(EnumChatFormatting.GREEN
+                + "[AEMobile] 已广播：" + sb));
     }
 
     // ------------------------------------------------------------ tps

@@ -18,7 +18,9 @@ public enum Mixin {
 
     // Replace with your own mixins:
     // You may also require multiple mods to be loaded if your mixin requires both
-    AEMobile("MixinGuiitemIconDumper", Side.CLIENT, TargetedMod.NEI);
+    AEMobile("MixinGuiitemIconDumper", Side.CLIENT, TargetedMod.NEI),
+    /** 抓服务器/插件广播的聊天；Side.BOTH 让单机内置服也能用 */
+    ServerChat("MixinServerConfigurationManager", Side.BOTH, TargetedMod.VANILLA);
 
     public final String mixinClass;
     public final List<TargetedMod> targetedMods;

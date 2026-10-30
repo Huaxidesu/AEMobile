@@ -169,7 +169,7 @@ public final class DebugBridge {
         String rest = cut < 0 ? content : content.substring(cut + 1);
         write(cmdFile, rest);
         for (String raw : complete.split("\n")) {
-            String line = raw.trim();
+            String line = raw.replace("\uFEFF", "").trim();
             if (line.isEmpty() || line.startsWith("#")) continue;
             queue.add(line);
         }
