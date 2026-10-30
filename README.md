@@ -44,7 +44,7 @@ App 的图标库由 [AEMobileIcoOutput](https://github.com/Huaxidesu/AEMobileIco
 客户端进入世界后执行：
 
 ```
-/aemobile dump all
+/aemobileicons dump all
 ```
 
 物品图标、流体颜色与方块图集快照、源质颜色与贴图路径会写入 `dumps/aemobile/`，
@@ -53,9 +53,9 @@ App 的图标库由 [AEMobileIcoOutput](https://github.com/Huaxidesu/AEMobileIco
 也可以只导其中一类：
 
 ```
-/aemobile dump items [尺寸]    仅物品图标，默认 128px
-/aemobile dump fluids          仅流体
-/aemobile dump aspects         仅源质
+/aemobileicons dump items [尺寸]    仅物品图标，默认 128px
+/aemobileicons dump fluids          仅流体
+/aemobileicons dump aspects         仅源质
 ```
 
 ## Build
