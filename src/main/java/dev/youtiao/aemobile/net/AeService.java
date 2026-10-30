@@ -6,6 +6,7 @@ import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.Config;
 import dev.youtiao.aemobile.blocks.TileAEMonitor;
 import dev.youtiao.aemobile.metrics.TickStats;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.world.World;
 import net.minecraftforge.common.DimensionManager;
@@ -179,6 +180,16 @@ public final class AeService {
             } catch (ChatHub.ChatException e) {
                 return fail(e.getMessage());
             }
+        }
+
+        if ("players".equals(op)) {
+            Map<String, Object> body = new LinkedHashMap<String, Object>();
+            MinecraftServer server = MinecraftServer.getServer();
+            String[] names = server == null || server.getConfigurationManager() == null
+                    ? null : server.getConfigurationManager().getAllUsernames();
+            body.put("mc", names == null ? new ArrayList<String>() : java.util.Arrays.asList(names));
+            body.put("app", ChatHub.recentAppNames());
+            return ok(body);
         }
 
         if ("music".equals(op)) {

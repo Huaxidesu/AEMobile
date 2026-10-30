@@ -6,18 +6,22 @@ import cpw.mods.fml.common.gameevent.TickEvent;
 import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.Config;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.stats.Achievement;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.ChatComponentTranslation;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
 import net.minecraftforge.event.ServerChatEvent;
+import net.minecraftforge.event.entity.player.AchievementEvent;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -59,6 +63,8 @@ public final class ChatHub {
     public static final int KIND_SERVER = 4;
     /** AllMusic 的点歌/播放消息，App 用唱片图标 */
     public static final int KIND_MUSIC = 5;
+    /** 玩家完成成就 */
+    public static final int KIND_ACHIEVEMENT = 6;
 
     /** 投递缓冲条数（不是历史存储） */
     private static final int BUFFER = 128;
@@ -82,6 +88,11 @@ public final class ChatHub {
     private static final ArrayDeque<String[]> RECENT_PRESENCE = new ArrayDeque<String[]>();
     private static volatile String lastServerText = "";
     private static volatile long lastServerAt = 0L;
+    /** 最近用过的 App 昵称（给 @ 补全用） */
+    private static final Set<String> APP_NAMES = java.util.Collections.synchronizedSet(new LinkedHashSet<String>());
+    /** 成就去重：`玩家|成就名` → 上次时间 */
+    private static final Map<String, Long> RECENT_ACH = new ConcurrentHashMap<String, Long>();
+    private static final long ACH_DEDUPE_MS = 5000L;
     /** 命令回显：`?/spawn`、`<name> /home` 这类，只有命令真的存在才过滤 */
     private static final java.util.regex.Pattern CMD_ECHO = java.util.regex.Pattern.compile(
             "(?i)^\\s*(?:\\[[^\\]]*\\]\\s*)*(?:<[^>]*>\\s*:?\\s*)?\\??/([A-Za-z0-9_\\-:]+)");
@@ -135,6 +146,8 @@ public final class ChatHub {
         }
         OUTBOUND.clear();
         RATE.clear();
+        APP_NAMES.clear();
+        RECENT_ACH.clear();
     }
 
     /** 由 CommonProxy.serverStopping 调用 */
@@ -144,6 +157,8 @@ public final class ChatHub {
         }
         OUTBOUND.clear();
         RATE.clear();
+        APP_NAMES.clear();
+        RECENT_ACH.clear();
     }
 
     // ------------------------------------------------------------ 订阅计数
@@ -171,16 +186,40 @@ public final class ChatHub {
 
     // ------------------------------------------------------------ 收：游戏内公屏
 
-    /** 挂在 {@code MinecraftForge.EVENT_BUS} 上（ServerChatEvent 是 Forge 总线事件，不是 FML 总线） */
+    /** 挂在 {@code MinecraftForge.EVENT_BUS} 上（ServerChatEvent / AchievementEvent 都是 Forge 总线） */
     public static final class ChatListener {
         @SubscribeEvent
         public void onChat(ServerChatEvent event) {
             // 没人订阅就什么都不做：不拷贝字符串、不入环、不占内存
             if (!Config.chatEnabled || !hasSubscribers()) return;
             if (event.player == null || event.message == null) return;
-            append(KIND_GAME, event.player.getCommandSenderName(), event.message);
+            String text = ChatFormat.sanitizeColored(event.message, Config.chatMaxText, false);
+            append(KIND_GAME, event.player.getCommandSenderName(), text);
             // 记下来：原版/插件可能紧接着把同一条聊天再广播一次
-            notePlayerChat(event.message);
+            notePlayerChat(ChatFormat.plain(text));
+        }
+
+        @SubscribeEvent
+        public void onAchievement(AchievementEvent event) {
+            if (!Config.chatEnabled || !Config.chatAchievements || !hasSubscribers()) return;
+            if (event.entityPlayer == null || event.achievement == null) return;
+            String who = event.entityPlayer.getCommandSenderName();
+            // 成就名走 StatBase.func_150951_e()（1.7.10 只有这一个取法）；服务端语言是 en_US，
+            // 拿不到中文。拿不到名字时退到 statId 并去掉 achievement. 前缀。
+            String name = "";
+            try {
+                IChatComponent comp = event.achievement.func_150951_e();
+                if (comp != null) name = comp.getUnformattedText();
+            } catch (Throwable ignored) {
+            }
+            if (name == null || name.isEmpty()) {
+                String id = event.achievement.statId;
+                name = id == null ? "" : id.replaceFirst("^achievement\\.", "");
+            }
+            if (name == null || name.isEmpty()) return;
+            // 同一个成就可能被 addStat 触发多次（插件补发 / 重登），5 秒内只记一次
+            if (!markAchievement(who + "|" + name)) return;
+            append(KIND_ACHIEVEMENT, who, name);
         }
     }
 
@@ -220,14 +259,24 @@ public final class ChatHub {
         if (!Config.chatEnabled) throw new ChatException("CHAT_DISABLED");
         if (MinecraftServer.getServer() == null) throw new ChatException("SERVER_NOT_READY");
 
-        String name = sanitize(rawName, Config.chatMaxName, true);
-        String text = sanitize(rawText, Config.chatMaxText, false);
+        String name = ChatFormat.sanitizeName(rawName, Config.chatMaxName);
+        String text = ChatFormat.sanitizeColored(rawText, Config.chatMaxText, false);
         if (name.isEmpty()) throw new ChatException("BAD_NAME");
         if (text.isEmpty()) throw new ChatException("BAD_TEXT");
 
         String limited = rateCheck(token);
         if (limited != null) throw new ChatException(limited);
 
+        APP_NAMES.add(name);
+        if (APP_NAMES.size() > 64) {
+            synchronized (APP_NAMES) {
+                java.util.Iterator<String> it = APP_NAMES.iterator();
+                if (it.hasNext()) {
+                    it.next();
+                    it.remove();
+                }
+            }
+        }
         long seq = append(KIND_APP, name, text);
 
         if (OUTBOUND.size() >= OUTBOX_MAX) {
@@ -252,8 +301,8 @@ public final class ChatHub {
     }
 
     /**
-     * 主线程广播。**这里只拼字面量**，不做任何解析 ——
-     * 文本里带 {@code /stop}、{@code §c}、{@code [系统]} 都只会原样显示。
+     * 主线程广播。只生成 {@link ChatComponentText} 字面量；
+     * {@code §}/{@code &} 颜色码会被安全解析（§k 丢弃），{@code @玩家} 用金色高亮。
      */
     private static void broadcast(String name, String text) {
         MinecraftServer server = MinecraftServer.getServer();
@@ -263,8 +312,8 @@ public final class ChatHub {
         head.getChatStyle().setColor(EnumChatFormatting.GRAY);
         ChatComponentText who = new ChatComponentText("[" + name + "] ");
         who.getChatStyle().setColor(EnumChatFormatting.AQUA);
-        ChatComponentText body = new ChatComponentText(text);
-        head.appendSibling(who).appendSibling(body);
+        head.appendSibling(who);
+        ChatFormat.append(head, text, EnumChatFormatting.GOLD);
 
         // 这条广播是 App 自己发的，captureServerChat 不要再当成服务器聊天收一遍
         APP_BROADCAST.set(Boolean.TRUE);
@@ -274,7 +323,7 @@ public final class ChatHub {
             APP_BROADCAST.remove();
         }
         // 服务端日志留档，便于事后查水表（聊天本身不存储）
-        AEMobile.info("[AEMobile][聊天] " + name + ": " + text);
+        AEMobile.info("[AEMobile][聊天] " + name + ": " + ChatFormat.plain(text));
     }
 
     /** 每 tick 最多广播这么多条，防止一次刷屏把 tick 拖长 */
@@ -375,10 +424,8 @@ public final class ChatHub {
             }
         }
 
-        String plain = component.getUnformattedText();
-        if (plain == null) return;
-        plain = sanitize(plain, Math.max(Config.chatMaxText * 2, 512), false);
-        if (plain.isEmpty()) return;
+        String plain = ChatFormat.plain(component.getUnformattedText());
+        if (plain == null || plain.isEmpty()) return;
         if (containsRecent(RECENT_PLAYER_CHAT, plain, PLAYER_DEDUPE_MS)) return;
         if (containsRecent(RECENT_PRESENCE, plain, PLAYER_DEDUPE_MS)) return;
         if (isExecutableCommandEcho(plain)) return;
@@ -390,15 +437,26 @@ public final class ChatHub {
             lastServerAt = now;
         }
 
+        String text = ChatFormat.sanitizeColored(component.getFormattedText(),
+                Math.max(Config.chatMaxText * 2, 512), false);
+        if (text.isEmpty()) text = plain;
+
         // AllMusic 单独一类，App 用唱片图标；只把「正在播放」这类公开消息放进公共聊天，
         // 搜索/帮助/队列结果由 AEMobileBridge 私有返回，不能广播给所有人。
         if (isMusicText(plain)) {
             if (!isMusicPublicText(plain)) return;
-            String body = stripMusicPrefix(plain);
-            append(KIND_MUSIC, "AllMusic", body.isEmpty() ? plain : body);
+            String body = stripMusicPrefix(text);
+            append(KIND_MUSIC, "AllMusic", body.isEmpty() ? text : body);
             return;
         }
-        append(KIND_SERVER, "服务器", plain);
+        append(KIND_SERVER, "服务器", text);
+    }
+
+    /** 最近用过的 App 昵称（给 App 的 @ 补全用） */
+    public static List<String> recentAppNames() {
+        synchronized (APP_NAMES) {
+            return new ArrayList<String>(APP_NAMES);
+        }
     }
 
     /** 文本是否带配置里的 AllMusic 前缀（[AllMusic3] / [肥猫电台] ...） */
@@ -429,8 +487,6 @@ public final class ChatHub {
         }
         return out.trim();
     }
-
-    /** 记录一条玩家聊天，供服务器广播去重（netty 线程调用） */
     static void notePlayerChat(String text) {
         pushRecent(RECENT_PLAYER_CHAT, text);
     }
@@ -438,6 +494,21 @@ public final class ChatHub {
     /** 记录一次玩家进出，供原版进出广播去重（主线程调用） */
     static void notePresence(String name) {
         pushRecent(RECENT_PRESENCE, name);
+    }
+
+    /** 成就去重：{@code ACH_DEDUPE_MS} 内同一个 key 只算一次，返回是否应当记录 */
+    private static boolean markAchievement(String key) {
+        long now = System.currentTimeMillis();
+        Long prev = RECENT_ACH.get(key);
+        if (prev != null && now - prev < ACH_DEDUPE_MS) return false;
+        RECENT_ACH.put(key, now);
+        if (RECENT_ACH.size() > 256) {
+            java.util.Iterator<Map.Entry<String, Long>> it = RECENT_ACH.entrySet().iterator();
+            while (it.hasNext()) {
+                if (now - it.next().getValue() > ACH_DEDUPE_MS) it.remove();
+            }
+        }
+        return true;
     }
 
     private static void pushRecent(ArrayDeque<String[]> queue, String text) {
@@ -481,43 +552,6 @@ public final class ChatHub {
             while (RING.size() > BUFFER) RING.pollFirst();
         }
         return seq;
-    }
-
-    /**
-     * 文本净化。双向都走这里：游戏内聊天进 App、App 消息进游戏。
-     *
-     * <ul>
-     *   <li>删 {@code §} 及其后面的格式码（否则客户端会被染色、改字体）；</li>
-     *   <li>删 C0/C1 控制字符，换行/制表转空格（防止伪造多行）；</li>
-     *   <li>删双向覆盖符 U+202A–202E / U+2066–2069 / U+200B–200F / U+FEFF（防止视觉伪装）；</li>
-     *   <li>名字额外删 {@code [} {@code ]}（防止伪装成别人的前缀）；</li>
-     *   <li>按码点截断到 {@code max}。</li>
-     * </ul>
-     */
-    static String sanitize(String raw, int max, boolean isName) {
-        if (raw == null) return "";
-        StringBuilder b = new StringBuilder(Math.min(raw.length(), max + 8));
-        int count = 0;
-        for (int i = 0; i < raw.length(); ) {
-            int cp = raw.codePointAt(i);
-            i += Character.charCount(cp);
-            if (cp == 0xA7) { // '§'：连同后面的格式码一起丢掉
-                if (i < raw.length()) i += Character.charCount(raw.codePointAt(i));
-                continue;
-            }
-            if (cp == '\n' || cp == '\r' || cp == '\t') {
-                b.append(' ');
-                count++;
-                continue;
-            }
-            if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F)) continue;
-            if (cp == 0xFEFF || (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E)
-                    || (cp >= 0x2066 && cp <= 0x2069)) continue;
-            if (isName && (cp == '[' || cp == ']')) continue;
-            b.appendCodePoint(cp);
-            if (++count >= max) break;
-        }
-        return b.toString().trim();
     }
 
     /** 单 token 限速：两次之间至少 {@code chatMinIntervalMs}，每分钟最多 {@code chatPerMinute} 条 */

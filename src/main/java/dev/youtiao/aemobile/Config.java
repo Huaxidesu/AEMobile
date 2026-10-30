@@ -17,6 +17,7 @@ public class Config {
         public static final int chatPerMinute = 30;
         public static final int chatBroadcastPerTick = 5;
         public static final boolean chatJoinLeave = true;
+        public static final boolean chatAchievements = true;
         public static final boolean musicEnabled = true;
         public static final String[] musicPrefixes = new String[]{"[AllMusic3]", "[肥猫电台]"};
         /** 只有带这些标记的 AllMusic 消息才进公共聊天流（避免把别人的搜歌/帮助结果广播出去） */
@@ -60,6 +61,8 @@ public class Config {
     public static int chatBroadcastPerTick = Defaults.chatBroadcastPerTick;
     /** 是否把玩家加入/退出也推给 App（只进手机，不广播游戏公屏） */
     public static boolean chatJoinLeave = Defaults.chatJoinLeave;
+    /** 是否把玩家完成成就推给 App */
+    public static boolean chatAchievements = Defaults.chatAchievements;
 
     /** 音乐桥开关（BC/代理上的 AEMobileBridge） */
     public static boolean musicEnabled = Defaults.musicEnabled;
@@ -97,6 +100,8 @@ public class Config {
                 "Max messages broadcast into the game per server tick.");
         chatJoinLeave = configuration.getBoolean("joinLeave", Categories.chat, Defaults.chatJoinLeave,
                 "Forward player join/leave notices to the App chat stream (never broadcast into game chat).");
+        chatAchievements = configuration.getBoolean("achievements", Categories.chat, Defaults.chatAchievements,
+                "Forward player achievements to the App chat stream as system lines.");
 
         musicEnabled = configuration.getBoolean("enabled", Categories.music, Defaults.musicEnabled,
                 "Enable the App music feature (song requests through AEMobileBridge).");
