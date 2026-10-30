@@ -182,7 +182,7 @@ public final class AeService {
         }
 
         if ("music".equals(op)) {
-            // 音乐命令转发给代理上的 AEMobileMusicBridge；不碰 AE2、不依赖监控器坐标。
+            // 音乐命令转发给代理上的 AEMobileBridge；不碰 AE2、不依赖监控器坐标。
             if (!Config.musicEnabled) return fail("MUSIC_DISABLED");
             String player = MonitorRegistry.nameForToken(token);
             if (player == null || player.isEmpty()) return fail("MUSIC_NO_PLAYER");

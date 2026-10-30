@@ -391,7 +391,7 @@ public final class ChatHub {
         }
 
         // AllMusic 单独一类，App 用唱片图标；只把「正在播放」这类公开消息放进公共聊天，
-        // 搜索/帮助/队列结果由 AEMobileMusicBridge 私有返回，不能广播给所有人。
+        // 搜索/帮助/队列结果由 AEMobileBridge 私有返回，不能广播给所有人。
         if (isMusicText(plain)) {
             if (!isMusicPublicText(plain)) return;
             String body = stripMusicPrefix(plain);

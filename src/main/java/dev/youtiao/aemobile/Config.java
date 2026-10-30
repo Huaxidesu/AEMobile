@@ -112,7 +112,7 @@ public class Config {
                 "AllMusic chat prefixes to recognise (one per line), e.g. [AllMusic3] or [肥猫电台].");
         musicPublicMarkers = configuration.getStringList("publicMarkers", Categories.music, Defaults.musicPublicMarkers,
                 "Only AllMusic messages containing one of these markers go to the public App chat (default: 正在播放).\n"
-                        + "Search/help/list responses are private to the requester via AEMobileMusicBridge.");
+                        + "Search/help/list responses are private to the requester via AEMobileBridge.");
 
         if (configuration.hasChanged()) {
             configuration.save();
