@@ -116,8 +116,10 @@ public final class ChatHub {
         public final String server;
         /** 结构化附件（JSON 数组字符串）；空串表示没有 */
         public final String att;
+        /** 玩家所在队伍名；空串表示没有队伍 */
+        public final String team;
 
-        Msg(long seq, int kind, String name, String text, long ts, String server, String att) {
+        Msg(long seq, int kind, String name, String text, long ts, String server, String att, String team) {
             this.seq = seq;
             this.kind = kind;
             this.name = name;
@@ -125,6 +127,7 @@ public final class ChatHub {
             this.ts = ts;
             this.server = server == null ? "" : server;
             this.att = att == null ? "" : att;
+            this.team = team == null ? "" : team;
         }
     }
 
@@ -394,7 +397,7 @@ public final class ChatHub {
                 next = m.seq;
                 if (!includeEvents && m.kind >= KIND_JOIN) continue;
                 // 6/7 位是可选扩展：来源服务器、结构化附件。老 App 只读前 5 位，多出来的会被忽略
-                rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts, m.server, m.att});
+                rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts, m.server, m.att, m.team});
                 if (rows.size() >= max) break;
             }
             if (rows.isEmpty()) return new Batch(null, next);
@@ -429,6 +432,18 @@ public final class ChatHub {
      */
     public static void acceptFormatted(IChatComponent component, String player, String world,
                                        String raw, String origin, boolean remote, int kind) {
+        acceptFormatted(component, player, world, raw, origin, remote, kind, "");
+    }
+
+    /**
+     * 同上，多带一个队伍名（GTNHChat 3.4.0 之后）。
+     *
+     * <p>保留 7 参重载是为了老版本 GTNHChat：它反射找的是 7 参签名，
+     * 少了这个重载桥会整个停用。
+     */
+    public static void acceptFormatted(IChatComponent component, String player, String world,
+                                       String raw, String origin, boolean remote, int kind,
+                                       String team) {
         if (!Config.chatEnabled || !hasSubscribers() || component == null) return;
 
         // 成就公告的组件是整行「玩家 达成了成就 xxx」，而手机端的系统行会自己拼名字和图标。
@@ -439,7 +454,7 @@ public final class ChatHub {
             String who = ChatFormat.sanitizeName(player, Config.chatMaxName);
             String ach = ChatFormat.sanitizeColored(raw, Config.chatMaxText, false);
             if (ach.isEmpty()) return;
-            append(kind, who.isEmpty() ? "服务器" : who, ach, "", "");
+            append(kind, who.isEmpty() ? "服务器" : who, ach, "", "", "");
             return;
         }
 
@@ -450,12 +465,13 @@ public final class ChatHub {
         String name = ChatFormat.sanitizeName(player, Config.chatMaxName);
         if (name.isEmpty()) name = "服务器";
         String server = remote ? ChatFormat.sanitizeName(origin, Config.chatMaxName) : "";
+        String teamName = ChatFormat.sanitizeName(team, Config.chatMaxName);
 
         BRIDGED.set(component);
         if (kind == KIND_GAME && raw != null && !raw.isEmpty()) {
             notePlayerChat(ChatFormat.plain(raw));
         }
-        append(kind, name, text, server, rich.att);
+        append(kind, name, text, server, rich.att, teamName);
     }
 
     /**
@@ -659,12 +675,16 @@ public final class ChatHub {
     // ------------------------------------------------------------ 内部
 
     private static long append(int kind, String name, String text) {
-        return append(kind, name, text, "", "");
+        return append(kind, name, text, "", "", "");
     }
 
     private static long append(int kind, String name, String text, String server, String att) {
+        return append(kind, name, text, server, att, "");
+    }
+
+    private static long append(int kind, String name, String text, String server, String att, String team) {
         long seq = SEQ.incrementAndGet();
-        Msg msg = new Msg(seq, kind, name, text, System.currentTimeMillis(), server, att);
+        Msg msg = new Msg(seq, kind, name, text, System.currentTimeMillis(), server, att, team);
         synchronized (RING) {
             RING.addLast(msg);
             while (RING.size() > BUFFER) RING.pollFirst();
