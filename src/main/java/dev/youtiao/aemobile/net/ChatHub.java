@@ -82,6 +82,14 @@ public final class ChatHub {
 
     /** 这个线程正在广播 App 消息：不要把它当成服务器聊天再抓一遍 */
     private static final ThreadLocal<Boolean> APP_BROADCAST = new ThreadLocal<Boolean>();
+    /**
+     * 已经由 {@link #acceptFormatted} 处理过、马上要被 {@code sendChatMsg} 广播的组件。
+     *
+     * <p>GTNHChat 在广播前把消息和元数据一起交过来，随后才调 {@code sendChatMsg}；
+     * 那里会再走一遍 {@link #captureServerChat}。按对象身份认下这一次广播，避免重复入队。
+     * 只在同一个线程、紧邻的两步之间有效，所以用 ThreadLocal 而不是全局表。
+     */
+    private static final ThreadLocal<IChatComponent> BRIDGED = new ThreadLocal<IChatComponent>();
     /** 最近玩家聊天文本，用来去掉 MiaoChat/原版对同一条聊天的二次广播 */
     private static final ArrayDeque<String[]> RECENT_PLAYER_CHAT = new ArrayDeque<String[]>();
     /** 最近加入/退出的玩家名，用来去掉原版进出提示的二次广播 */
@@ -104,13 +112,19 @@ public final class ChatHub {
         public final String name;
         public final String text;
         public final long ts;
+        /** 来源服务器显示名；空串表示本服 */
+        public final String server;
+        /** 结构化附件（JSON 数组字符串）；空串表示没有 */
+        public final String att;
 
-        Msg(long seq, int kind, String name, String text, long ts) {
+        Msg(long seq, int kind, String name, String text, long ts, String server, String att) {
             this.seq = seq;
             this.kind = kind;
             this.name = name;
             this.text = text;
             this.ts = ts;
+            this.server = server == null ? "" : server;
+            this.att = att == null ? "" : att;
         }
     }
 
@@ -203,6 +217,9 @@ public final class ChatHub {
         public void onAchievement(AchievementEvent event) {
             if (!Config.chatEnabled || !Config.chatAchievements || !hasSubscribers()) return;
             if (event.entityPlayer == null || event.achievement == null) return;
+            // 装了 GTNHChat 时成就公告由它统一发（它走客户端上报，覆盖范围比服务端的
+            // AchievementEvent 更全，还带跨服转发）。两边都发的话手机端会出现两条。
+            if (gtnhChatPresent()) return;
             String who = event.entityPlayer.getCommandSenderName();
             // 成就名走 StatBase.func_150951_e()（1.7.10 只有这一个取法）；服务端语言是 en_US，
             // 拿不到中文。拿不到名字时退到 statId 并去掉 achievement. 前缀。
@@ -376,7 +393,8 @@ public final class ChatHub {
                 // 游标必须越过被过滤掉的事件，否则关掉进出提示后每帧都从同一条开始扫
                 next = m.seq;
                 if (!includeEvents && m.kind >= KIND_JOIN) continue;
-                rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts});
+                // 6/7 位是可选扩展：来源服务器、结构化附件。老 App 只读前 5 位，多出来的会被忽略
+                rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts, m.server, m.att});
                 if (rows.size() >= max) break;
             }
             if (rows.isEmpty()) return new Batch(null, next);
@@ -394,6 +412,53 @@ public final class ChatHub {
     // ------------------------------------------------------------ 收：服务器广播
 
     /**
+     * GTNHChat 在广播前把消息连同元数据交过来（反射调用，见 GTNHChat 的 {@code bridge/MobileBridge}）。
+     *
+     * <p>不经过这里的话，{@link #captureServerChat} 只能看到「已经格式化好的整行」：
+     * 玩家名、来源服务器都揉进文本里，手机端只能一律显示成「服务器」。
+     *
+     * <p>调用方约定：本方法返回后必须紧接着用同一个组件对象调 {@code sendChatMsg}。
+     * 这里把它记进 {@link #BRIDGED}，那次广播会被认下来、不再重复入队。
+     *
+     * @param player 说话的人
+     * @param world  世界显示名（暂时用不到，世界名已经在正文里）
+     * @param raw    玩家原始输入，用于去重
+     * @param origin 来源服务器显示名
+     * @param remote 是否是别的服务器转发过来的；为 true 时手机端才标注来源
+     * @param kind   {@link #KIND_GAME} / {@link #KIND_SERVER} / {@link #KIND_ACHIEVEMENT}
+     */
+    public static void acceptFormatted(IChatComponent component, String player, String world,
+                                       String raw, String origin, boolean remote, int kind) {
+        if (!Config.chatEnabled || !hasSubscribers() || component == null) return;
+
+        // 成就公告的组件是整行「玩家 达成了成就 xxx」，而手机端的系统行会自己拼名字和图标。
+        // 这里只要成就名（桥把它放在 raw 里），否则会显示成「Steve 完成了成就 Steve 达成了成就 xxx」。
+        if (kind == KIND_ACHIEVEMENT) {
+            BRIDGED.set(component);
+            if (raw == null || raw.isEmpty()) return;
+            String who = ChatFormat.sanitizeName(player, Config.chatMaxName);
+            String ach = ChatFormat.sanitizeColored(raw, Config.chatMaxText, false);
+            if (ach.isEmpty()) return;
+            append(kind, who.isEmpty() ? "服务器" : who, ach, "", "");
+            return;
+        }
+
+        ChatRich.Result rich = ChatRich.parse(component);
+        String text = ChatFormat.sanitizeColored(rich.text, Math.max(Config.chatMaxText * 2, 512), false);
+        if (text.isEmpty() && rich.att.isEmpty()) return;
+
+        String name = ChatFormat.sanitizeName(player, Config.chatMaxName);
+        if (name.isEmpty()) name = "服务器";
+        String server = remote ? ChatFormat.sanitizeName(origin, Config.chatMaxName) : "";
+
+        BRIDGED.set(component);
+        if (kind == KIND_GAME && raw != null && !raw.isEmpty()) {
+            notePlayerChat(ChatFormat.plain(raw));
+        }
+        append(kind, name, text, server, rich.att);
+    }
+
+    /**
      * 服务器/插件广播的聊天（公告、/say、AutoMessage 等）。
      *
      * <p>由 {@code MixinServerConfigurationManager} 在 {@code sendChatMsg} 头部调用。
@@ -401,6 +466,7 @@ public final class ChatHub {
      *
      * <p>过滤：
      * <ul>
+     *   <li>GTNHChat 已经通过 {@link #acceptFormatted} 交过来的那条 —— 按对象身份认下；</li>
      *   <li>App 自己发的广播（{@link #APP_BROADCAST}）—— 它已经以 kind 1 入环；</li>
      *   <li>玩家聊天/进出的二次广播 —— 已有 kind 0/2/3，靠最近的文本/名字去重；</li>
      *   <li>可执行命令的回显（{@code ?/spawn}、{@code <name> /home}）—— 命令存在于服务端才过滤，
@@ -410,6 +476,14 @@ public final class ChatHub {
      */
     public static void captureServerChat(IChatComponent component) {
         if (!Config.chatEnabled || !hasSubscribers() || component == null) return;
+
+        IChatComponent bridged = BRIDGED.get();
+        if (bridged != null) {
+            // 不管是不是同一条都清掉：桥调用后没有广播的情况不该影响下一条消息
+            BRIDGED.remove();
+            if (bridged == component) return;
+        }
+
         if (Boolean.TRUE.equals(APP_BROADCAST.get())) return;
 
         if (component instanceof ChatComponentTranslation) {
@@ -424,8 +498,9 @@ public final class ChatHub {
             }
         }
 
-        String plain = ChatFormat.plain(component.getUnformattedText());
-        if (plain == null || plain.isEmpty()) return;
+        ChatRich.Result rich = ChatRich.parse(component);
+        String plain = ChatFormat.plain(rich.text);
+        if (plain.isEmpty() && rich.att.isEmpty()) return;
         if (containsRecent(RECENT_PLAYER_CHAT, plain, PLAYER_DEDUPE_MS)) return;
         if (containsRecent(RECENT_PRESENCE, plain, PLAYER_DEDUPE_MS)) return;
         if (isExecutableCommandEcho(plain)) return;
@@ -437,7 +512,7 @@ public final class ChatHub {
             lastServerAt = now;
         }
 
-        String text = ChatFormat.sanitizeColored(formattedText(component),
+        String text = ChatFormat.sanitizeColored(rich.text,
                 Math.max(Config.chatMaxText * 2, 512), false);
         if (text.isEmpty()) text = plain;
 
@@ -449,7 +524,7 @@ public final class ChatHub {
             append(KIND_MUSIC, "AllMusic", body.isEmpty() ? text : body);
             return;
         }
-        append(KIND_SERVER, "服务器", text);
+        append(KIND_SERVER, "服务器", text, "", rich.att);
     }
 
     /** 最近用过的 App 昵称（给 App 的 @ 补全用） */
@@ -476,23 +551,26 @@ public final class ChatHub {
     }
 
     /**
-     * 拿「带 {@code §} 颜色码」的文本。
-     *
-     * <p>不能直接写 {@code component.getFormattedText()}：这个方法在 reobf 后
-     * 运行时找不到（{@code NoSuchMethodError: func_150254_d}），一调就把整条
-     * 服务器广播链路打断。这里走反射，MCP 名和 SRG 名各试一次，
-     * 都拿不到就退回纯文本（颜色丢了但消息还在）。
+     * 注：颜色码由 {@link ChatRich} 自己按组件树生成，不走 {@code IChatComponent.getFormattedText()}。
+     * 那个方法在 reobf 后运行时找不到（{@code NoSuchMethodError: func_150254_d}），
+     * 一调就把整条服务器广播链路打断 —— 这是 2026-10-30 踩过的坑。
      */
-    private static String formattedText(IChatComponent component) {
-        for (String name : new String[]{"getFormattedText", "func_150254_d"}) {
+
+    /** GTNHChat 是否在场（只探测一次；探测失败不影响任何功能） */
+    private static Boolean GTNHCHAT;
+
+    private static boolean gtnhChatPresent() {
+        if (GTNHCHAT == null) {
+            boolean present;
             try {
-                java.lang.reflect.Method m = component.getClass().getMethod(name);
-                Object v = m.invoke(component);
-                if (v instanceof String) return (String) v;
-            } catch (Throwable ignored) {
+                Class.forName("com.huaxidesu.gtnchat.GTNHChat");
+                present = true;
+            } catch (Throwable t) {
+                present = false;
             }
+            GTNHCHAT = Boolean.valueOf(present);
         }
-        return component.getUnformattedText();
+        return GTNHCHAT.booleanValue();
     }
 
     /** 文本是否带配置里的 AllMusic 前缀（[AllMusic3] / [肥猫电台] ...） */
@@ -581,8 +659,12 @@ public final class ChatHub {
     // ------------------------------------------------------------ 内部
 
     private static long append(int kind, String name, String text) {
+        return append(kind, name, text, "", "");
+    }
+
+    private static long append(int kind, String name, String text, String server, String att) {
         long seq = SEQ.incrementAndGet();
-        Msg msg = new Msg(seq, kind, name, text, System.currentTimeMillis());
+        Msg msg = new Msg(seq, kind, name, text, System.currentTimeMillis(), server, att);
         synchronized (RING) {
             RING.addLast(msg);
             while (RING.size() > BUFFER) RING.pollFirst();
