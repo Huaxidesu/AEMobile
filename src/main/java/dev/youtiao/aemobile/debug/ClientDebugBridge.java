@@ -227,13 +227,14 @@ public final class ClientDebugBridge {
         ItemStack held = mc.thePlayer.getHeldItem();
         if (held == null) return "empty-hand";
         try {
-            net.minecraft.nbt.NBTTagCompound item = new net.minecraft.nbt.NBTTagCompound();
-            held.writeToNBT(item);
+            // 必须用 NEI 自己的序列化：服务端是 StackInfo.loadFromNBT 解析的，
+            // 喂原版 ItemStack.writeToNBT 的格式会解析成 null，然后 getDisplayName() NPE。
+            Class<?> stackInfo = Class.forName("codechicken.nei.recipe.StackInfo");
+            Object item = stackInfo.getMethod("itemStackToNBT", ItemStack.class).invoke(null, held);
             net.minecraft.nbt.NBTTagCompound payload = new net.minecraft.nbt.NBTTagCompound();
-            // NEI 的 NEIServerUtils.sendChatItemLink 第一件事就是读 linkType，
-            // 少了它直接 NPE（客户端只会收到一行 java.lang.NullPointerException）
+            // NEIServerUtils.sendChatItemLink 第一行就读 linkType
             payload.setString("linkType", "item");
-            payload.setTag("item", item);
+            payload.setTag("item", (net.minecraft.nbt.NBTBase) item);
             Class<?> utils = Class.forName("codechicken.nei.NEIClientUtils");
             utils.getMethod("sendChatItemLink", net.minecraft.nbt.NBTTagCompound.class)
                 .invoke(null, payload);
