@@ -21,6 +21,9 @@ public class ClientProxy extends CommonProxy {
         dev.youtiao.aemobile.debug.DebugBridge.startClient(net.minecraft.client.Minecraft.getMinecraft().mcDataDir);
         cpw.mods.fml.common.FMLCommonHandler.instance().bus()
                 .register(new dev.youtiao.aemobile.debug.ClientDebugBridge());
+        // 客户端收到的聊天记录：给调试通道的 chatlog / chatjson 用（Forge 总线）
+        net.minecraftforge.common.MinecraftForge.EVENT_BUS
+                .register(new dev.youtiao.aemobile.debug.ClientChatLog());
     }
 
     // postInit "Handle interaction with other mods, complete your setup based on this."
