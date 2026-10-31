@@ -10,24 +10,68 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+
 /**
  * AllMusic3 的“正在播放/点歌”消息是逐个玩家 {@code sendMessage}（S02PacketChat），
  * 不走 {@code ServerConfigurationManager.sendChatMsg}，所以单独在这里抓。
  *
  * <p>只认文本里带 {@code [AllMusic3]} 的聊天包，避免把私聊、歌词、命令反馈带进 App；
  * 同一条消息发给多个玩家时由 {@link ChatHub#captureServerChat} 的 800ms 去重合并。
+ *
+ * <p><b>取组件必须走反射</b>：直接写 {@code packet.func_148915_c()} 编译能过，
+ * 但在 Thermos 上运行时报 {@code NoSuchMethodError}，而且是在玩家登录、
+ * 服务端发欢迎消息时触发 —— 整条连接被踢掉（{@code A fatal error has occured}）。
+ * 方法名和字段名在不同端上不一样，所以两种都试一遍。
  */
 @Mixin(NetHandlerPlayServer.class)
 public class MixinNetHandlerPlayServer {
 
+    /** 反射拿到的取组件方式，第一次调用时确定 */
+    private static Method getter;
+    private static Field field;
+    private static boolean resolved;
+
     @Inject(method = "func_147359_a", at = @At("HEAD"))
     private void aemobile$captureMusicChat(Packet packet, CallbackInfo ci) {
         if (!(packet instanceof S02PacketChat)) return;
-        IChatComponent component = ((S02PacketChat) packet).func_148915_c();
+        IChatComponent component = componentOf((S02PacketChat) packet);
         if (component == null) return;
         String plain = component.getUnformattedText();
         if (plain != null && ChatHub.isMusicText(plain) && ChatHub.isMusicPublicText(plain)) {
             ChatHub.captureServerChat(component);
         }
+    }
+
+    /** S02PacketChat → IChatComponent，方法名和字段名各试一次 */
+    private static IChatComponent componentOf(S02PacketChat packet) {
+        if (!resolved) {
+            resolved = true;
+            for (String name : new String[]{"func_148915_c", "getChatComponent"}) {
+                try {
+                    getter = S02PacketChat.class.getMethod(name);
+                    break;
+                } catch (Throwable ignored) {
+                }
+            }
+            if (getter == null) {
+                for (String name : new String[]{"field_148919_a", "chatComponent"}) {
+                    try {
+                        Field f = S02PacketChat.class.getDeclaredField(name);
+                        f.setAccessible(true);
+                        field = f;
+                        break;
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        }
+        try {
+            if (getter != null) return (IChatComponent) getter.invoke(packet);
+            if (field != null) return (IChatComponent) field.get(packet);
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 }
