@@ -95,6 +95,8 @@ public final class ClientDebugBridge {
                 return players(mc);
             case "biome":
                 return biome(mc);
+            case "nei":
+                return neiShare(mc);
             default:
                 // 不带子命令时保持老行为：整行当命令处理
                 return command(mc, line);
@@ -211,6 +213,33 @@ public final class ClientDebugBridge {
             return String.valueOf(mc.theWorld.getBiomeGenForCoords(x, z).biomeName);
         } catch (Throwable t) {
             return "unknown";
+        }
+    }
+
+    /**
+     * 模拟 NEI 的 Ctrl+L：把手持物品按 NEI 的格式发给服务端。
+     *
+     * <p>{@code NEIClientUtils.sendChatItemLink} 就是那个快捷键最终调用的方法，
+     * 参数是 {@code {item: <ItemStack 的 NBT>}}，和 GTNHChat 的 NeiLink 读的格式一致。
+     * 反射调用，没装 NEI 时返回错误而不是崩溃。
+     */
+    private static String neiShare(Minecraft mc) {
+        ItemStack held = mc.thePlayer.getHeldItem();
+        if (held == null) return "empty-hand";
+        try {
+            net.minecraft.nbt.NBTTagCompound item = new net.minecraft.nbt.NBTTagCompound();
+            held.writeToNBT(item);
+            net.minecraft.nbt.NBTTagCompound payload = new net.minecraft.nbt.NBTTagCompound();
+            // NEI 的 NEIServerUtils.sendChatItemLink 第一件事就是读 linkType，
+            // 少了它直接 NPE（客户端只会收到一行 java.lang.NullPointerException）
+            payload.setString("linkType", "item");
+            payload.setTag("item", item);
+            Class<?> utils = Class.forName("codechicken.nei.NEIClientUtils");
+            utils.getMethod("sendChatItemLink", net.minecraft.nbt.NBTTagCompound.class)
+                .invoke(null, payload);
+            return "nei-link-sent: " + held.getDisplayName();
+        } catch (Throwable t) {
+            return "nei-error=" + t;
         }
     }
 
