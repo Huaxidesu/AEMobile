@@ -5,6 +5,7 @@ import cpw.mods.fml.common.gameevent.PlayerEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.Config;
+import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.stats.Achievement;
 import net.minecraft.util.ChatComponentText;
@@ -118,8 +119,18 @@ public final class ChatHub {
         public final String att;
         /** 玩家所在队伍名；空串表示没有队伍 */
         public final String team;
+        /** 队伍颜色码字符（{@code d} / {@code b} …）；空串表示没有队伍或没装 ServerUtilities */
+        public final String teamColor;
+        /**
+         * 玩家所在世界的显示名（GTNHChat 已经按 Multiverse 别名 / config 表换好中文）。
+         *
+         * <p>空串表示不知道：服务器广播、App 消息、老版本 GTNHChat 都没有这个字段。
+         * App 拿不到就只显示服务器和队伍，不画世界标签。
+         */
+        public final String world;
 
-        Msg(long seq, int kind, String name, String text, long ts, String server, String att, String team) {
+        Msg(long seq, int kind, String name, String text, long ts, String server, String att, String team,
+            String teamColor, String world) {
             this.seq = seq;
             this.kind = kind;
             this.name = name;
@@ -128,6 +139,8 @@ public final class ChatHub {
             this.server = server == null ? "" : server;
             this.att = att == null ? "" : att;
             this.team = team == null ? "" : team;
+            this.teamColor = teamColor == null ? "" : teamColor;
+            this.world = world == null ? "" : world;
         }
     }
 
@@ -342,6 +355,9 @@ public final class ChatHub {
         } finally {
             APP_BROADCAST.remove();
         }
+        // 群组服：手机端的消息不经过 ServerChatEvent，GTNHChat 的跨服转发收不到，
+        // 这里补一次。没装 GTNHChat 时是空操作，不会多花任何东西。
+        GtnChatBridge.forward(name, ChatFormat.plain(text));
         // 服务端日志留档，便于事后查水表（聊天本身不存储）
         AEMobile.info("[AEMobile][聊天] " + name + ": " + ChatFormat.plain(text));
     }
@@ -396,8 +412,10 @@ public final class ChatHub {
                 // 游标必须越过被过滤掉的事件，否则关掉进出提示后每帧都从同一条开始扫
                 next = m.seq;
                 if (!includeEvents && m.kind >= KIND_JOIN) continue;
-                // 6/7 位是可选扩展：来源服务器、结构化附件。老 App 只读前 5 位，多出来的会被忽略
-                rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts, m.server, m.att, m.team});
+                // 6-10 位是可选扩展：来源服务器、结构化附件、队伍名、队伍颜色、世界名。
+                // 老 App 只读前 5 位，多出来的会被忽略
+                rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts, m.server, m.att, m.team,
+                    m.teamColor, m.world});
                 if (rows.size() >= max) break;
             }
             if (rows.isEmpty()) return new Batch(null, next);
@@ -424,7 +442,7 @@ public final class ChatHub {
      * 这里把它记进 {@link #BRIDGED}，那次广播会被认下来、不再重复入队。
      *
      * @param player 说话的人
-     * @param world  世界显示名（暂时用不到，世界名已经在正文里）
+     * @param world  世界显示名（GTNHChat 已换成中文别名）；App 用它画「世界」标签
      * @param raw    玩家原始输入，用于去重
      * @param origin 来源服务器显示名
      * @param remote 是否是别的服务器转发过来的；为 true 时手机端才标注来源
@@ -444,6 +462,20 @@ public final class ChatHub {
     public static void acceptFormatted(IChatComponent component, String player, String world,
                                        String raw, String origin, boolean remote, int kind,
                                        String team) {
+        acceptFormatted(component, player, world, raw, origin, remote, kind, team, "");
+    }
+
+    /**
+     * 同上，多带一个队伍颜色（GTNHChat 3.4.1 之后）。
+     *
+     * <p>保留 8 参重载是为了老版本 GTNHChat：它反射找的是 8 参签名，
+     * 少了这个重载桥会整个停用。
+     *
+     * @param teamColor 队伍颜色码字符（{@code d} / {@code b} …），手机端拿它给名字上色
+     */
+    public static void acceptFormatted(IChatComponent component, String player, String world,
+                                       String raw, String origin, boolean remote, int kind,
+                                       String team, String teamColor) {
         if (!Config.chatEnabled || !hasSubscribers() || component == null) return;
 
         // 成就公告的组件是整行「玩家 达成了成就 xxx」，而手机端的系统行会自己拼名字和图标。
@@ -458,20 +490,53 @@ public final class ChatHub {
             return;
         }
 
+        // 跨服过来的手机端消息：正文在 raw 里，组件是渲染给游戏内的整行
+        // （`[天空树][AEMobile][名字] 正文`）。直接摊平组件的话，App 气泡会变成
+        // 「名字: [天空树][AEMobile][名字] 正文」—— 前缀重复两遍。
+        if (kind == KIND_APP && raw != null && !raw.isEmpty()) {
+            BRIDGED.set(component);
+            String who = ChatFormat.sanitizeName(player, Config.chatMaxName);
+            String body = ChatFormat.sanitizeColored(raw, Config.chatMaxText, false);
+            if (body.isEmpty()) return;
+            String from = remote ? ChatFormat.sanitizeName(origin, Config.chatMaxName) : "";
+            append(KIND_APP, who.isEmpty() ? "手机端" : who, body, from, "", "",
+                "", ChatFormat.sanitizeName(world, Config.chatMaxName));
+            return;
+        }
+
         ChatRich.Result rich = ChatRich.parse(component);
-        String text = ChatFormat.sanitizeColored(rich.text, Math.max(Config.chatMaxText * 2, 512), false);
-        if (text.isEmpty() && rich.att.isEmpty()) return;
 
         String name = ChatFormat.sanitizeName(player, Config.chatMaxName);
         if (name.isEmpty()) name = "服务器";
         String server = remote ? ChatFormat.sanitizeName(origin, Config.chatMaxName) : "";
         String teamName = ChatFormat.sanitizeName(team, Config.chatMaxName);
+        // 世界显示名：GTNHChat 已经换成了中文别名（`华溪岛` / `家园 #12`）。
+        // App 用它画「世界」标签；拿不到就空串，App 那边整段跳过。
+        String worldName = ChatFormat.sanitizeName(world, Config.chatMaxName);
+        // 颜色只有一个码字符，不走 sanitizeName —— 那个函数是给名字用的，
+        // 对 1 字符的输入会有意外结果（2026-11-01 排查队伍颜色时踩到）
+        String color = teamColor == null ? "" : teamColor.trim();
+        if (color.length() != 1) color = "";
 
         BRIDGED.set(component);
+        AEMobile.debug("[AEMobile] chat kind=" + kind + " name=[" + name + "] team=[" + teamName
+            + "] color=[" + color + "]");
+
+        // 玩家聊天：正文只用玩家打的那几个字。
+        // `component` 是 GTNHChat 渲染好的整行（`[天空树][华溪岛][华溪岛]Steve: 你好`），
+        // 摊平当正文会变成「Steve: [天空树][华溪岛][华溪岛]Steve: 你好」—— 前缀重复一遍。
+        // 服务器/队伍/名字在 App 里是独立标签，正文不该再带这些。
         if (kind == KIND_GAME && raw != null && !raw.isEmpty()) {
+            String body = ChatFormat.sanitizeColored(raw, Config.chatMaxText, false);
+            if (body.isEmpty()) return;
             notePlayerChat(ChatFormat.plain(raw));
+            append(kind, name, body, server, rich.att, teamName, color, worldName);
+            return;
         }
-        append(kind, name, text, server, rich.att, teamName);
+
+        String text = ChatFormat.sanitizeColored(rich.text, Math.max(Config.chatMaxText * 2, 512), false);
+        if (text.isEmpty() && rich.att.isEmpty()) return;
+        append(kind, name, text, server, rich.att, teamName, color, worldName);
     }
 
     /**
@@ -540,7 +605,68 @@ public final class ChatHub {
             append(KIND_MUSIC, "AllMusic", body.isEmpty() ? text : body);
             return;
         }
+        // NEI 物品链接：消息是「玩家 分享了 [物品]」，名字在 translation 的第一个参数里。
+        // 不取出来的话手机端一律显示成「服务器 分享了 xxx」，看不出是谁分享的。
+        // 用 KIND_GAME 而不是 KIND_SERVER：App 那边玩家消息是气泡 + 头像，服务器广播是
+        // 喇叭图标 + 灰名，物品卡片挂在玩家气泡里才像「这个人分享了东西」。
+        //
+        // 正文留空（ChatRich 把 NEI 那句模板整个丢了）：服务端只发「谁 + 什么物品」，
+        // 「分享了物品」这句文案由 App 按附件类型生成 —— 服务端不做翻译。
+        String who = neiSharer(component);
+        if (!who.isEmpty()) {
+            String[] team = neiTeam(who);
+            append(KIND_GAME, who, text, "", rich.att, team[0], team[1]);
+            return;
+        }
         append(KIND_SERVER, "服务器", text, "", rich.att);
+    }
+
+    /**
+     * 分享物品的玩家所在队伍，返回 {@code [名字, 颜色码]}。
+     *
+     * <p>NEI 的广播里只有组件，没有玩家对象，所以按名字反查在线玩家，再借 GTNHChat 的
+     * {@code TeamInfo} 取队伍 —— 那套反射（ServerUtilities 的 title/简介/职位/颜色）
+     * 已经在 GTNHChat 里写好了，这里不再抄一遍。没装 GTNHChat 或玩家不在线时返回空数组，
+     * 手机端就不显示队伍标签、名字用默认色。
+     */
+    private static String[] neiTeam(String playerName) {
+        String[] empty = { "", "" };
+        try {
+            MinecraftServer server = MinecraftServer.getServer();
+            if (server == null || server.getConfigurationManager() == null) return empty;
+            Object player = server.getConfigurationManager().func_152612_a(playerName);
+            if (!(player instanceof EntityPlayerMP)) return empty;
+            Class<?> teamInfo = Class.forName("com.huaxidesu.gtnchat.chat.TeamInfo");
+            Object info = teamInfo.getMethod("of", EntityPlayerMP.class).invoke(null, player);
+            if (info == null) return empty;
+            Object name = info.getClass().getField("name").get(info);
+            Object color = info.getClass().getField("color").get(info);
+            return new String[] {
+                name == null ? "" : ChatFormat.sanitizeName(String.valueOf(name), Config.chatMaxName),
+                color == null ? "" : ChatFormat.sanitizeName(String.valueOf(color), 1) };
+        } catch (Throwable t) {
+            return empty;
+        }
+    }
+
+    /** NEI 物品链接的分享者名字；不是 NEI 消息或取不到时返回空串 */
+    private static String neiSharer(IChatComponent component) {
+        if (!(component instanceof ChatComponentTranslation)) return "";
+        try {
+            ChatComponentTranslation tr = (ChatComponentTranslation) component;
+            String key = tr.getKey();
+            if (key == null || !key.startsWith("nei.chat.item_link")) return "";
+            Object[] args = tr.getFormatArgs();
+            if (args == null || args.length == 0 || args[0] == null) return "";
+            // 正常是 IChatComponent；Thermos 下 getDisplayName() 偶尔给的是 String，两种都收
+            Object first = args[0];
+            String s = first instanceof IChatComponent
+                ? ((IChatComponent) first).getUnformattedText()
+                : String.valueOf(first);
+            return s == null ? "" : ChatFormat.sanitizeName(s, Config.chatMaxName);
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     /** 最近用过的 App 昵称（给 App 的 @ 补全用） */
@@ -675,16 +801,26 @@ public final class ChatHub {
     // ------------------------------------------------------------ 内部
 
     private static long append(int kind, String name, String text) {
-        return append(kind, name, text, "", "", "");
+        return append(kind, name, text, "", "", "", "");
     }
 
     private static long append(int kind, String name, String text, String server, String att) {
-        return append(kind, name, text, server, att, "");
+        return append(kind, name, text, server, att, "", "");
     }
 
     private static long append(int kind, String name, String text, String server, String att, String team) {
+        return append(kind, name, text, server, att, team, "");
+    }
+
+    private static long append(int kind, String name, String text, String server, String att, String team,
+                               String teamColor) {
+        return append(kind, name, text, server, att, team, teamColor, "");
+    }
+
+    private static long append(int kind, String name, String text, String server, String att, String team,
+                               String teamColor, String world) {
         long seq = SEQ.incrementAndGet();
-        Msg msg = new Msg(seq, kind, name, text, System.currentTimeMillis(), server, att, team);
+        Msg msg = new Msg(seq, kind, name, text, System.currentTimeMillis(), server, att, team, teamColor, world);
         synchronized (RING) {
             RING.addLast(msg);
             while (RING.size() > BUFFER) RING.pollFirst();

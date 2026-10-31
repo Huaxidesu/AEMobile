@@ -272,9 +272,44 @@ public final class WorldNames {
         if (s.length() >= 2) {
             char a = s.charAt(0);
             char b = s.charAt(s.length() - 1);
-            if ((a == '\'' && b == '\'') || (a == '"' && b == '"')) return s.substring(1, s.length() - 1);
+            if ((a == '\'' && b == '\'') || (a == '"' && b == '"')) s = s.substring(1, s.length() - 1);
         }
-        return s;
+        return unescape(s);
+    }
+
+    /**
+     * 还原 YAML 双引号里的转义。
+     *
+     * <p>MV 用 SnakeYAML 写文件，中文默认写成 {@code "\u534E\u6EAA\u5C9B"} 这种转义形式；
+     * 只去引号的话拿到的是字面量 {@code \u534E}，别名永远匹配不上真实世界名 ——
+     * 表现就是「服主改了世界名，App 里还是『家园 #180』」。
+     */
+    private static String unescape(String s) {
+        if (s.indexOf('\\') < 0) return s;
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c != '\\' || i + 1 >= s.length()) {
+                sb.append(c);
+                continue;
+            }
+            char n = s.charAt(i + 1);
+            if (n == 'u' && i + 5 < s.length()) {
+                try {
+                    sb.append((char) Integer.parseInt(s.substring(i + 2, i + 6), 16));
+                    i += 5;
+                    continue;
+                } catch (NumberFormatException ignored) {
+                    // 不是合法转义，原样保留
+                }
+            } else if (n == '\\' || n == '"' || n == '\'') {
+                sb.append(n);
+                i++;
+                continue;
+            }
+            sb.append(c);
+        }
+        return sb.toString();
     }
 
     /** 给 {@code /aemobile dims} 用：当前解析到的 alias 条数 */

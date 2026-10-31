@@ -2,6 +2,7 @@ package dev.youtiao.aemobile.net;
 
 import net.minecraft.event.ClickEvent;
 import net.minecraft.event.HoverEvent;
+import net.minecraft.util.ChatComponentTranslation;
 import net.minecraft.util.ChatStyle;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
@@ -126,7 +127,13 @@ final class ChatRich {
 
         // 只取本节点自身的文本：getUnformattedText() 会把 siblings 一起拼进来，
         // 递归时就会每段重复一遍。getUnformattedTextForChat() 不含 siblings。
-        String own = node.getUnformattedTextForChat();
+        String own;
+        if (node instanceof ChatComponentTranslation) {
+            own = translationText((ChatComponentTranslation) node, ctx);
+        } else {
+            own = node.getUnformattedTextForChat();
+        }
+
         if (own != null && !own.isEmpty()) {
             String left = own;
             if (isNeiItem(style)) {
@@ -151,6 +158,51 @@ final class ChatRich {
         if (siblings != null) {
             for (IChatComponent s : siblings) walk(s, ctx);
         }
+    }
+
+    /**
+     * translation 节点的文本，顺带从参数里摘附件。
+     *
+     * <p>NEI 广播的是 {@code ChatComponentTranslation("nei.chat.item_link.text", 玩家, 物品)}，
+     * 物品那一段带着 {@code /nei_bookmark} 的点击动作，而 {@code getUnformattedTextForChat()}
+     * 会把参数转成纯文本 —— 点击就没了。
+     *
+     * <p>命中物品时**整句直接丢掉**，连翻译都不做：那是 NEI 自己的模板
+     * （{@code "Steve Click to add bookmark: [xxx]"}），服务端不翻译也不转述，
+     * 手机端按附件类型出本地文案（{@code attHint}）。
+     */
+    private static String translationText(ChatComponentTranslation tr, Ctx ctx) {
+        Object[] args;
+        try {
+            args = tr.getFormatArgs();
+        } catch (Throwable t) {
+            args = null;
+        }
+        if (args == null || args.length == 0) {
+            return tr.getUnformattedTextForChat();
+        }
+
+        boolean nei = false;
+        for (Object arg : args) {
+            if (!(arg instanceof IChatComponent)) continue;
+            IChatComponent c = (IChatComponent) arg;
+            Style cs = of(c);
+            String text = c.getUnformattedText();
+            if (text == null || text.isEmpty()) continue;
+
+            if (isNeiItem(cs)) {
+                addAtt(ctx, new Att("item", stripBrackets(text), hoverText(cs.hover), null));
+                nei = true;
+                continue;
+            }
+            if (text.contains(QUEST_MARKER)) {
+                Matcher m = QUEST_ID.matcher(text);
+                if (m.find()) addAtt(ctx, new Att("quest", "", "", m.group(1)));
+            }
+        }
+        // 物品消息整句不要：省一次 StatCollector 翻译，正文由 App 出
+        if (nei) return "";
+        return tr.getUnformattedTextForChat();
     }
 
     private static boolean isNeiItem(Style style) {

@@ -4,6 +4,7 @@ import dev.youtiao.aemobile.net.ChatHub;
 import net.minecraft.network.NetHandlerPlayServer;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.server.S02PacketChat;
+import net.minecraft.util.ChatComponentTranslation;
 import net.minecraft.util.IChatComponent;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -38,10 +39,28 @@ public class MixinNetHandlerPlayServer {
         if (!(packet instanceof S02PacketChat)) return;
         IChatComponent component = componentOf((S02PacketChat) packet);
         if (component == null) return;
+        if (isNeiLink(component)) {
+            // NEI 的物品链接也是逐个玩家发的（`ServerUtils.sendChatToAll`），同样不走
+            // `sendChatMsg`；不在这里捞，手机端永远看不到别人分享的物品。
+            ChatHub.captureServerChat(component);
+            return;
+        }
         String plain = component.getUnformattedText();
         if (plain != null && ChatHub.isMusicText(plain) && ChatHub.isMusicPublicText(plain)) {
             ChatHub.captureServerChat(component);
         }
+    }
+
+    /**
+     * 是不是 NEI 的物品链接。
+     *
+     * <p>按 translation key 判断而不是按文本：服务端是 en_US，文本是「Steve shared [xxx]」，
+     * 匹配文本容易误伤；key 是固定的 {@code nei.chat.item_link.text}。
+     */
+    private static boolean isNeiLink(IChatComponent component) {
+        if (!(component instanceof ChatComponentTranslation)) return false;
+        String key = ((ChatComponentTranslation) component).getKey();
+        return key != null && key.startsWith("nei.chat.item_link");
     }
 
     /** S02PacketChat → IChatComponent，方法名和字段名各试一次 */
