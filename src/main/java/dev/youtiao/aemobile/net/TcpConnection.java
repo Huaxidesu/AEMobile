@@ -173,6 +173,10 @@ final class TcpConnection implements Runnable {
         m.put("ver", Tags.VERSION);
         m.put("time", System.currentTimeMillis() / 1000L);
         m.put("nonce", nonce);
+        // 本服在群组服里的显示名（GTNHChat 的 Config.serverDisplay）。
+        // 手机端拿它区分「本服」和「别的服」—— 本服消息的来源标签显示成灰色，跨服的才用配置色。
+        // 没装 GTNHChat 时是空串，手机端就一视同仁。
+        m.put("srv", GtnChatBridge.serverDisplay());
         sendFrame(Protocol.T_HELLO_ACK, m);
     }
 

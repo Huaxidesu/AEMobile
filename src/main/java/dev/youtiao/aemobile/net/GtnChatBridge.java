@@ -2,6 +2,8 @@ package dev.youtiao.aemobile.net;
 
 import java.lang.reflect.Method;
 
+import dev.youtiao.aemobile.Config;
+
 /**
  * 把手机端发出的聊天交给 GTNHChat 转发到群组服里的其它后端。
  *
@@ -18,6 +20,10 @@ final class GtnChatBridge {
     private static boolean checked;
     /** {@code ChatRelay.forwardAppChat(String, String)}；null 表示 GTNHChat 不在场或版本太旧 */
     private static Method forward;
+    /** {@code Config.serverDisplay}；null 表示 GTNHChat 不在场，本服显示名取不到 */
+    private static java.lang.reflect.Field displayField;
+    /** 反射读出来的本服显示名，第一次读到时缓存（配置改了要重启，所以缓存安全） */
+    private static String display;
 
     private GtnChatBridge() {}
 
@@ -30,6 +36,31 @@ final class GtnChatBridge {
         } catch (Throwable t) {
             forward = null;
         }
+        try {
+            Class<?> cfg = Class.forName("com.huaxidesu.gtnchat.config.Config");
+            displayField = cfg.getField("serverDisplay");
+        } catch (Throwable t) {
+            displayField = null;
+        }
+    }
+
+    /**
+     * 本服在群组服里的显示名（GTNHChat 的 {@code Config.serverDisplay}，例如「天空树」）。
+     *
+     * <p>没装 GTNHChat 时返回空串 —— 手机端拿不到就不画服务器标签，不猜。
+     * 这里只读一次就缓存：配置改了本来就要重启，缓存不会读到过期值。
+     */
+    static String serverDisplay() {
+        check();
+        if (display != null) return display;
+        if (displayField == null) return display = "";
+        try {
+            Object v = displayField.get(null);
+            display = v == null ? "" : ChatFormat.sanitizeName(String.valueOf(v), Config.chatMaxName);
+        } catch (Throwable t) {
+            display = "";
+        }
+        return display;
     }
 
     /**

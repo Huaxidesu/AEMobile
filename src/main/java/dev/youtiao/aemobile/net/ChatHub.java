@@ -310,7 +310,7 @@ public final class ChatHub {
                 }
             }
         }
-        long seq = append(KIND_APP, name, text);
+        long seq = append(KIND_APP, name, text, GtnChatBridge.serverDisplay(), "", "", "", "");
 
         if (OUTBOUND.size() >= OUTBOX_MAX) {
             // 有人刷屏：丢最旧的广播任务，只保留最新的
@@ -498,7 +498,8 @@ public final class ChatHub {
             String who = ChatFormat.sanitizeName(player, Config.chatMaxName);
             String body = ChatFormat.sanitizeColored(raw, Config.chatMaxText, false);
             if (body.isEmpty()) return;
-            String from = remote ? ChatFormat.sanitizeName(origin, Config.chatMaxName) : "";
+            String from = ChatFormat.sanitizeName(origin, Config.chatMaxName);
+            if (from.isEmpty()) from = GtnChatBridge.serverDisplay();
             append(KIND_APP, who.isEmpty() ? "手机端" : who, body, from, "", "",
                 "", ChatFormat.sanitizeName(world, Config.chatMaxName));
             return;
@@ -508,7 +509,12 @@ public final class ChatHub {
 
         String name = ChatFormat.sanitizeName(player, Config.chatMaxName);
         if (name.isEmpty()) name = "服务器";
-        String server = remote ? ChatFormat.sanitizeName(origin, Config.chatMaxName) : "";
+        // 来源服始终填：本服消息也标上本服显示名。
+        // 3.4.0 时这里写的是 `remote ? origin : ""`（本服不标来源，免得每条都挂前缀），
+        // 但手机端的来源标签现在藏在头像后面、点开才看，那个「免得挂前缀」的理由不成立了，
+        // 而玩家点开却看不到服务器反而更像 bug。
+        String server = ChatFormat.sanitizeName(origin, Config.chatMaxName);
+        if (server.isEmpty()) server = GtnChatBridge.serverDisplay();
         String teamName = ChatFormat.sanitizeName(team, Config.chatMaxName);
         // 世界显示名：GTNHChat 已经换成了中文别名（`华溪岛` / `家园 #12`）。
         // App 用它画「世界」标签；拿不到就空串，App 那边整段跳过。
