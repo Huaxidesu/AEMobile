@@ -264,9 +264,14 @@ public final class ChatHub {
                 if (comp != null) name = comp.getUnformattedText();
             } catch (Throwable ignored) {
             }
-            if (name == null || name.isEmpty()) {
+            // 成就名里可能带颜色码（`§c§lKuba's Hibiscus Tea` 这种），手机端不解析，先清掉
+            name = ChatFormat.plain(name);
+            // 有些模组的成就没有 en_US 条目，func_150951_e() 直接把语言 key 原样返回
+            // （`achievement.enhanced_charm_of_dislocation`）。这种也退回 statId 并去掉下划线，
+            // 至少是「enhanced charm of dislocation」而不是一串 key。
+            if (name.isEmpty() || name.startsWith("achievement.")) {
                 String id = event.achievement.statId;
-                name = id == null ? "" : id.replaceFirst("^achievement\\.", "");
+                name = id == null ? "" : id.replaceFirst("^achievement\\.", "").replace('_', ' ');
             }
             if (name == null || name.isEmpty()) return;
             append(KIND_ACHIEVEMENT, who, name);
