@@ -607,6 +607,12 @@ public final class ChatHub {
                         || "multiplayer.player.left".equals(key)) {
                     return;
                 }
+                // 成就公告：我们自己会发一条 kind 6（中文、居中），原版这条是英文的，
+                // 而且成就名是组件的兄弟节点，扁平化后只剩半句
+                // 「Huaxidesu has just earned the achievement [」—— 又重复又残缺，直接丢。
+                if ("chat.type.achievement".equals(key) || "chat.type.achievement.taken".equals(key)) {
+                    return;
+                }
             }
         }
 
