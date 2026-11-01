@@ -7,7 +7,22 @@ import net.minecraftforge.common.config.Configuration;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-@Mod(modid = Tags.MODID, version = Tags.VERSION, name = Tags.MODNAME, acceptedMinecraftVersions = "[1.7.10]")
+/**
+ * 版本策略（2026-11-01）：
+ *
+ * <p>{@code acceptableRemoteVersions = "[3.4.0,)"} —— 客户端只要 **≥ 3.4.0** 就能连，
+ * 服务端以后随便升版本都不再踢人。Forge 默认要求两边版本**完全一致**，所以以前每次发版
+ * 玩家都得换 jar，这是「模组服分发模组很麻烦」的根源。
+ *
+ * <p>能这么放宽是因为：App 走的是**裸 TCP**（端口见 config），聊天/TPS/AE 查询这些功能
+ * 一个字节都不经过 Minecraft 网络，客户端 mod 只负责把管理器方块画出来。
+ * 所以只要**方块注册名、TE id、贴图路径**不变，客户端 jar 可以一直用同一个。
+ *
+ * <p>唯一还会逼客户端更新的情况：**新增方块或方块 GUI**。加设备前先想清楚，
+ * 优先做成「同一个方块 + NBT 区分类型」。
+ */
+@Mod(modid = Tags.MODID, version = Tags.VERSION, name = Tags.MODNAME, acceptedMinecraftVersions = "[1.7.10]",
+        acceptableRemoteVersions = "[3.4.0,)")
 public class AEMobile {
 
     private static Logger LOG = LogManager.getLogger(Tags.MODID);

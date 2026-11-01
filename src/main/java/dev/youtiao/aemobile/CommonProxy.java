@@ -72,6 +72,12 @@ public class CommonProxy {
     private static boolean eventsRegistered = false;
 
     public void serverStarted(FMLServerStartedEvent event) {
+        // 只有**专用服务器**才起 TCP 监听和采集。
+        // 单人游戏里这个事件也会触发（集成服务器），以前会把 44444 也监听起来 ——
+        // 玩家自己开单机时白占一个端口，而且客户端 jar 里根本不需要这套东西。
+        // 注意：FMLServerStartedEvent 没有 getServer()，得从 MinecraftServer 拿。
+        net.minecraft.server.MinecraftServer mcServer = net.minecraft.server.MinecraftServer.getServer();
+        if (mcServer == null || !mcServer.isDedicatedServer()) return;
         // 协议 3.0.0：不再起 Spring/Tomcat，直接开 TCP 监听（端口见 config 的 [server] port）
         // 启动前先从 playerdata 恢复 token 表和监控器坐标表：
         // 不这么做的话，重启后没人走到监控器附近时 App 会误报「密码错误」。
