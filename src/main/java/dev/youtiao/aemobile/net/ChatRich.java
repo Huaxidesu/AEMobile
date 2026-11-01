@@ -39,6 +39,20 @@ final class ChatRich {
     /** NEI 物品链接的点击命令前缀 */
     private static final String NEI_CLICK = "/nei_bookmark";
 
+    /**
+     * 玩家原始输入是不是「只有一条任务分享标记」。
+     *
+     * <p>BetterQuesting 分享任务的做法是把玩家的输入整个换成
+     * {@code betterquesting.msg.sharequest:<24 位 id>} 再发出去，所以走
+     * {@code ServerChatEvent} 的时候 {@code raw} 就是这串标记本身。原样当正文送到手机上，
+     * 显示的是一串乱码 —— 正文留空，让 App 按附件类型出「分享了任务」，
+     * 和 NEI 物品分享一个处理方式。
+     */
+    static boolean isQuestShare(String raw) {
+        if (raw == null) return false;
+        return raw.trim().startsWith(QUEST_MARKER);
+    }
+
     /** 一条消息最多带几个附件，防止有人刷一屏物品把帧撑大 */
     private static final int MAX_ATT = 8;
 

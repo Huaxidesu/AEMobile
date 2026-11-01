@@ -533,8 +533,12 @@ public final class ChatHub {
         // 摊平当正文会变成「Steve: [天空树][华溪岛][华溪岛]Steve: 你好」—— 前缀重复一遍。
         // 服务器/队伍/名字在 App 里是独立标签，正文不该再带这些。
         if (kind == KIND_GAME && raw != null && !raw.isEmpty()) {
-            String body = ChatFormat.sanitizeColored(raw, Config.chatMaxText, false);
-            if (body.isEmpty()) return;
+            // BQ 的任务分享：玩家「打的那几个字」就是 betterquesting.msg.sharequest:<id>，
+            // 原样当正文会在手机上显示成一串乱码。正文留空，App 按附件出「分享了任务」。
+            String body = ChatRich.isQuestShare(raw)
+                    ? ""
+                    : ChatFormat.sanitizeColored(raw, Config.chatMaxText, false);
+            if (body.isEmpty() && rich.att.isEmpty()) return;
             notePlayerChat(ChatFormat.plain(raw));
             append(kind, name, body, server, rich.att, teamName, color, worldName);
             return;
@@ -621,7 +625,11 @@ public final class ChatHub {
         String who = neiSharer(component);
         if (!who.isEmpty()) {
             String[] team = neiTeam(who);
-            append(KIND_GAME, who, text, "", rich.att, team[0], team[1]);
+            // 来源服和世界也要填：手机端的分组身份带 world，不填的话这条会自己另起一组
+            // （头像点不开、也不和这个人刚说的话并在一起）。世界名借 GTNHChat 的
+            // ChatFormat.worldName 算，保证和普通聊天用的是同一套名字。
+            append(KIND_GAME, who, text, GtnChatBridge.serverDisplay(), rich.att, team[0], team[1],
+                neiWorld(who));
             return;
         }
         append(KIND_SERVER, "服务器", text, "", rich.att);
@@ -652,6 +660,30 @@ public final class ChatHub {
                 color == null ? "" : ChatFormat.sanitizeName(String.valueOf(color), 1) };
         } catch (Throwable t) {
             return empty;
+        }
+    }
+
+    /**
+     * 分享物品的玩家所在世界的显示名。
+     *
+     * <p>和 {@link #neiTeam} 同一个套路：NEI 的广播里没有玩家对象，按名字反查在线玩家，
+     * 再借 GTNHChat 的 {@code ChatFormat.worldName(EntityPlayerMP)} 算 —— 那套别名表
+     * （MV alias / config）已经在 GTNHChat 里了，这边自己再查一遍只会出现两套命名。
+     *
+     * <p>为什么非要填：手机端的分组身份带 world，留空的话物品分享会自己另起一组，
+     * 既点不开头像，也不和这个人刚说的话并在一起。
+     */
+    private static String neiWorld(String playerName) {
+        try {
+            MinecraftServer server = MinecraftServer.getServer();
+            if (server == null || server.getConfigurationManager() == null) return "";
+            Object player = server.getConfigurationManager().func_152612_a(playerName);
+            if (!(player instanceof EntityPlayerMP)) return "";
+            Class<?> fmt = Class.forName("com.huaxidesu.gtnchat.chat.ChatFormat");
+            Object name = fmt.getMethod("worldName", EntityPlayerMP.class).invoke(null, player);
+            return name == null ? "" : ChatFormat.sanitizeName(String.valueOf(name), Config.chatMaxName);
+        } catch (Throwable t) {
+            return "";
         }
     }
 
