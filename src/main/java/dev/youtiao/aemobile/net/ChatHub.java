@@ -101,9 +101,8 @@ public final class ChatHub {
     private static volatile long lastServerAt = 0L;
     /** 最近用过的 App 昵称（给 @ 补全用） */
     private static final Set<String> APP_NAMES = java.util.Collections.synchronizedSet(new LinkedHashSet<String>());
-    /** 成就去重：`玩家|成就名` → 上次时间 */
-    private static final Map<String, Long> RECENT_ACH = new ConcurrentHashMap<String, Long>();
-    private static final long ACH_DEDUPE_MS = 5000L;
+    /** 成就去重：`玩家名` → 本次登录期间已经处理过的成就 statId（进服时用「已解锁」建立基线） */
+    private static final Map<String, Set<String>> ACH_SEEN = new ConcurrentHashMap<String, Set<String>>();
     /** 命令回显：`?/spawn`、`<name> /home` 这类，只有命令真的存在才过滤 */
     private static final java.util.regex.Pattern CMD_ECHO = java.util.regex.Pattern.compile(
             "(?i)^\\s*(?:\\[[^\\]]*\\]\\s*)*(?:<[^>]*>\\s*:?\\s*)?\\??/([A-Za-z0-9_\\-:]+)");
@@ -179,7 +178,7 @@ public final class ChatHub {
         OUTBOUND.clear();
         RATE.clear();
         APP_NAMES.clear();
-        RECENT_ACH.clear();
+        ACH_SEEN.clear();
     }
 
     /** 由 CommonProxy.serverStopping 调用 */
@@ -190,7 +189,7 @@ public final class ChatHub {
         OUTBOUND.clear();
         RATE.clear();
         APP_NAMES.clear();
-        RECENT_ACH.clear();
+        ACH_SEEN.clear();
     }
 
     // ------------------------------------------------------------ 订阅计数
@@ -252,6 +251,11 @@ public final class ChatHub {
             //   手机端一条成就都收不到（本机就是这个配置）。
             // 客户端确实装了（1）或老版本没法判断（-1）时才让路，保持老行为。
             if (GtnChatCompat.clientMod(who) != 0) return;
+            // 1.7.10 的 AchievementEvent 是「加了统计」而不是「刚解锁」：
+            // 「打开背包」(Taking Inventory) 每开一次背包就 addStat 一次，
+            // 只按时间窗去重的话，隔几秒开一次就刷一条。所以按「本次登录第一次见到」算。
+            String statId = event.achievement.statId;
+            if (statId == null || !firstAchievement(who, statId)) return;
             // 成就名走 StatBase.func_150951_e()（1.7.10 只有这一个取法）；服务端语言是 en_US，
             // 拿不到中文。拿不到名字时退到 statId 并去掉 achievement. 前缀。
             String name = "";
@@ -265,8 +269,6 @@ public final class ChatHub {
                 name = id == null ? "" : id.replaceFirst("^achievement\\.", "");
             }
             if (name == null || name.isEmpty()) return;
-            // 同一个成就可能被 addStat 触发多次（插件补发 / 重登），5 秒内只记一次
-            if (!markAchievement(who + "|" + name)) return;
             append(KIND_ACHIEVEMENT, who, name);
         }
     }
@@ -278,6 +280,9 @@ public final class ChatHub {
     public static final class PlayerEvents {
         @SubscribeEvent
         public void onJoin(PlayerEvent.PlayerLoggedInEvent event) {
+            // 成就基线：进服前就已经解锁的不算「这次拿到的」，先记下来。
+            // 和进出提示无关，所以放在配置判断之前。
+            if (event.player instanceof EntityPlayerMP) primeAchievements((EntityPlayerMP) event.player);
             if (!Config.chatEnabled || !Config.chatJoinLeave || !hasSubscribers()) return;
             if (event.player == null) return;
             String name = event.player.getCommandSenderName();
@@ -288,6 +293,7 @@ public final class ChatHub {
 
         @SubscribeEvent
         public void onLeave(PlayerEvent.PlayerLoggedOutEvent event) {
+            if (event.player != null) forgetAchievements(event.player.getCommandSenderName());
             if (!Config.chatEnabled || !Config.chatJoinLeave || !hasSubscribers()) return;
             if (event.player == null) return;
             String name = event.player.getCommandSenderName();
@@ -771,19 +777,48 @@ public final class ChatHub {
         pushRecent(RECENT_PRESENCE, name);
     }
 
-    /** 成就去重：{@code ACH_DEDUPE_MS} 内同一个 key 只算一次，返回是否应当记录 */
-    private static boolean markAchievement(String key) {
-        long now = System.currentTimeMillis();
-        Long prev = RECENT_ACH.get(key);
-        if (prev != null && now - prev < ACH_DEDUPE_MS) return false;
-        RECENT_ACH.put(key, now);
-        if (RECENT_ACH.size() > 256) {
-            java.util.Iterator<Map.Entry<String, Long>> it = RECENT_ACH.entrySet().iterator();
-            while (it.hasNext()) {
-                if (now - it.next().getValue() > ACH_DEDUPE_MS) it.remove();
+    /**
+     * 建立成就基线：把**已经解锁**的成就先塞进 seen，它们再被 addStat 触发时就不会当成新成就。
+     *
+     * <p>为什么要基线：1.7.10 的 {@code AchievementEvent} 语义是「加了统计」，不是「刚解锁」——
+     * 「打开背包」每开一次背包就 addStat 一次。只按时间窗去重的话，玩家隔几秒开一次背包，
+     * 手机端就多一条「完成了成就」（2026-11-01 实测刷屏）。
+     */
+    private static void primeAchievements(EntityPlayerMP player) {
+        Set<String> seen = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+        try {
+            // 服务端的统计文件是 StatisticsFile（extends StatFileWriter），
+            // 取法只有 SRG 名 func_147099_x()：这套 MCP 里没给它起名字
+            net.minecraft.stats.StatFileWriter stats = player.func_147099_x();
+            if (stats != null) {
+                for (Object o : net.minecraft.stats.AchievementList.achievementList) {
+                    if (!(o instanceof Achievement)) continue;
+                    Achievement a = (Achievement) o;
+                    try {
+                        if (stats.hasAchievementUnlocked(a)) seen.add(a.statId);
+                    } catch (Throwable ignored) {
+                    }
+                }
             }
+        } catch (Throwable t) {
+            // 读不到统计文件就退化成「本次登录内只报一次」，不影响其它功能
         }
-        return true;
+        ACH_SEEN.put(player.getCommandSenderName(), seen);
+    }
+
+    /** 本次登录第一次见到这个成就才返回 true（含登录时建立的基线） */
+    private static boolean firstAchievement(String player, String statId) {
+        Set<String> seen = ACH_SEEN.get(player);
+        if (seen == null) {
+            Set<String> created = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+            Set<String> prev = ACH_SEEN.putIfAbsent(player, created);
+            seen = prev != null ? prev : created;
+        }
+        return seen.add(statId);
+    }
+
+    private static void forgetAchievements(String player) {
+        if (player != null) ACH_SEEN.remove(player);
     }
 
     private static void pushRecent(ArrayDeque<String[]> queue, String text) {
