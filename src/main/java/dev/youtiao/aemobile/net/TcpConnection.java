@@ -3,6 +3,7 @@ package dev.youtiao.aemobile.net;
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.Tags;
+import dev.youtiao.aemobile.compat.GtnChatCompat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
@@ -176,7 +177,11 @@ final class TcpConnection implements Runnable {
         // 本服在群组服里的显示名（GTNHChat 的 Config.serverDisplay）。
         // 手机端拿它区分「本服」和「别的服」—— 本服消息的来源标签显示成灰色，跨服的才用配置色。
         // 没装 GTNHChat 时是空串，手机端就一视同仁。
-        m.put("srv", GtnChatBridge.serverDisplay());
+        m.put("srv", GtnChatCompat.serverDisplay());
+        // 这台服实际能提供的可选能力（聊天格式化 / 队伍 / 世界名 / 跨服）。
+        // App 据此决定要不要显示队伍·服务器·世界标签、要不要给「标签常驻」这个样式 ——
+        // 没装的服上那些 UI 直接不出现，而不是留着点了没反应。老 App 忽略这个字段。
+        m.put("caps", GtnChatCompat.caps());
         sendFrame(Protocol.T_HELLO_ACK, m);
     }
 

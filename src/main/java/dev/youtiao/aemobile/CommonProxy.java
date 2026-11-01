@@ -103,6 +103,9 @@ public class CommonProxy {
         }
         dev.youtiao.aemobile.net.ChatHub.start();
         dev.youtiao.aemobile.debug.DebugBridge.startServer();
+        // 聊天能力是「探测到才有」：没装 GTNHChat 时队伍/服务器/世界标签整体关闭，
+        // 手机端靠握手里的 caps 知道这一点。这一行让服主一眼看出当前是哪一档。
+        AEMobile.info("[AEMobile] " + dev.youtiao.aemobile.compat.GtnChatCompat.describe());
     }
 
     public void serverStopping(FMLServerStoppingEvent event) {

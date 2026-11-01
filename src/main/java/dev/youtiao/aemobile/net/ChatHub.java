@@ -1,10 +1,12 @@
 package dev.youtiao.aemobile.net;
 
+import cpw.mods.fml.common.eventhandler.EventPriority;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.PlayerEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import dev.youtiao.aemobile.AEMobile;
 import dev.youtiao.aemobile.Config;
+import dev.youtiao.aemobile.compat.GtnChatCompat;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.stats.Achievement;
@@ -218,10 +220,20 @@ public final class ChatHub {
 
     /** 挂在 {@code MinecraftForge.EVENT_BUS} 上（ServerChatEvent / AchievementEvent 都是 Forge 总线） */
     public static final class ChatListener {
-        @SubscribeEvent
+        /**
+         * 玩家公屏。
+         *
+         * <p><b>必须是 LOWEST 优先级</b>：装了 GTNHChat 时它会在 NORMAL 优先级取消这个事件、
+         * 自己渲染再广播，并在广播前把元数据交给 {@link #acceptFormatted}。以前靠「它注册得早」
+         * 侥幸避开了重复入队，注册顺序一变手机端每条聊天就会收两份 —— 现在把顺序写死在这里，
+         * 顺便把「已被取消」也显式挡掉。
+         */
+        @SubscribeEvent(priority = EventPriority.LOWEST)
         public void onChat(ServerChatEvent event) {
             // 没人订阅就什么都不做：不拷贝字符串、不入环、不占内存
             if (!Config.chatEnabled || !hasSubscribers()) return;
+            // GTNHChat 已经接管：它会通过 acceptFormatted 交过来，这里再收一次就是重复
+            if (event.isCanceled()) return;
             if (event.player == null || event.message == null) return;
             String text = ChatFormat.sanitizeColored(event.message, Config.chatMaxText, false);
             append(KIND_GAME, event.player.getCommandSenderName(), text);
@@ -233,10 +245,13 @@ public final class ChatHub {
         public void onAchievement(AchievementEvent event) {
             if (!Config.chatEnabled || !Config.chatAchievements || !hasSubscribers()) return;
             if (event.entityPlayer == null || event.achievement == null) return;
-            // 装了 GTNHChat 时成就公告由它统一发（它走客户端上报，覆盖范围比服务端的
-            // AchievementEvent 更全，还带跨服转发）。两边都发的话手机端会出现两条。
-            if (gtnhChatPresent()) return;
             String who = event.entityPlayer.getCommandSenderName();
+            // 成就公告由谁发，看**这台客户端**装没装 GTNHChat：
+            //   GTNHChat 的成就是客户端上报驱动的，客户端没装它自己也播不出来 ——
+            //   以前这里一律「装了 GTNHChat 就让路」，结果客户端没装时两边都不发，
+            //   手机端一条成就都收不到（本机就是这个配置）。
+            // 客户端确实装了（1）或老版本没法判断（-1）时才让路，保持老行为。
+            if (GtnChatCompat.clientMod(who) != 0) return;
             // 成就名走 StatBase.func_150951_e()（1.7.10 只有这一个取法）；服务端语言是 en_US，
             // 拿不到中文。拿不到名字时退到 statId 并去掉 achievement. 前缀。
             String name = "";
@@ -310,7 +325,7 @@ public final class ChatHub {
                 }
             }
         }
-        long seq = append(KIND_APP, name, text, GtnChatBridge.serverDisplay(), "", "", "", "");
+        long seq = append(KIND_APP, name, text, GtnChatCompat.serverDisplay(), "", "", "", "");
 
         if (OUTBOUND.size() >= OUTBOX_MAX) {
             // 有人刷屏：丢最旧的广播任务，只保留最新的
@@ -357,7 +372,7 @@ public final class ChatHub {
         }
         // 群组服：手机端的消息不经过 ServerChatEvent，GTNHChat 的跨服转发收不到，
         // 这里补一次。没装 GTNHChat 时是空操作，不会多花任何东西。
-        GtnChatBridge.forward(name, ChatFormat.plain(text));
+        GtnChatCompat.forwardAppChat(name, ChatFormat.plain(text));
         // 服务端日志留档，便于事后查水表（聊天本身不存储）
         AEMobile.info("[AEMobile][聊天] " + name + ": " + ChatFormat.plain(text));
     }
@@ -499,7 +514,7 @@ public final class ChatHub {
             String body = ChatFormat.sanitizeColored(raw, Config.chatMaxText, false);
             if (body.isEmpty()) return;
             String from = ChatFormat.sanitizeName(origin, Config.chatMaxName);
-            if (from.isEmpty()) from = GtnChatBridge.serverDisplay();
+            if (from.isEmpty()) from = GtnChatCompat.serverDisplay();
             append(KIND_APP, who.isEmpty() ? "手机端" : who, body, from, "", "",
                 "", ChatFormat.sanitizeName(world, Config.chatMaxName));
             return;
@@ -514,7 +529,7 @@ public final class ChatHub {
         // 但手机端的来源标签现在藏在头像后面、点开才看，那个「免得挂前缀」的理由不成立了，
         // 而玩家点开却看不到服务器反而更像 bug。
         String server = ChatFormat.sanitizeName(origin, Config.chatMaxName);
-        if (server.isEmpty()) server = GtnChatBridge.serverDisplay();
+        if (server.isEmpty()) server = GtnChatCompat.serverDisplay();
         String teamName = ChatFormat.sanitizeName(team, Config.chatMaxName);
         // 世界显示名：GTNHChat 已经换成了中文别名（`华溪岛` / `家园 #12`）。
         // App 用它画「世界」标签；拿不到就空串，App 那边整段跳过。
@@ -628,7 +643,7 @@ public final class ChatHub {
             // 来源服和世界也要填：手机端的分组身份带 world，不填的话这条会自己另起一组
             // （头像点不开、也不和这个人刚说的话并在一起）。世界名借 GTNHChat 的
             // ChatFormat.worldName 算，保证和普通聊天用的是同一套名字。
-            append(KIND_GAME, who, text, GtnChatBridge.serverDisplay(), rich.att, team[0], team[1],
+            append(KIND_GAME, who, text, GtnChatCompat.serverDisplay(), rich.att, team[0], team[1],
                 neiWorld(who));
             return;
         }
@@ -636,54 +651,37 @@ public final class ChatHub {
     }
 
     /**
-     * 分享物品的玩家所在队伍，返回 {@code [名字, 颜色码]}。
+     * 按名字反查在线玩家，交给 {@link GtnChatCompat#teamOf}。
      *
-     * <p>NEI 的广播里只有组件，没有玩家对象，所以按名字反查在线玩家，再借 GTNHChat 的
-     * {@code TeamInfo} 取队伍 —— 那套反射（ServerUtilities 的 title/简介/职位/颜色）
-     * 已经在 GTNHChat 里写好了，这里不再抄一遍。没装 GTNHChat 或玩家不在线时返回空数组，
-     * 手机端就不显示队伍标签、名字用默认色。
+     * <p>NEI 的广播里只有组件、没有玩家对象，只能这么绕一下。
+     * 没装 GTNHChat 或玩家不在线时返回空数组，手机端就不显示队伍标签、名字用默认色。
      */
     private static String[] neiTeam(String playerName) {
-        String[] empty = { "", "" };
-        try {
-            MinecraftServer server = MinecraftServer.getServer();
-            if (server == null || server.getConfigurationManager() == null) return empty;
-            Object player = server.getConfigurationManager().func_152612_a(playerName);
-            if (!(player instanceof EntityPlayerMP)) return empty;
-            Class<?> teamInfo = Class.forName("com.huaxidesu.gtnchat.chat.TeamInfo");
-            Object info = teamInfo.getMethod("of", EntityPlayerMP.class).invoke(null, player);
-            if (info == null) return empty;
-            Object name = info.getClass().getField("name").get(info);
-            Object color = info.getClass().getField("color").get(info);
-            return new String[] {
-                name == null ? "" : ChatFormat.sanitizeName(String.valueOf(name), Config.chatMaxName),
-                color == null ? "" : ChatFormat.sanitizeName(String.valueOf(color), 1) };
-        } catch (Throwable t) {
-            return empty;
-        }
+        EntityPlayerMP player = onlinePlayer(playerName);
+        return player == null ? new String[] { "", "" } : GtnChatCompat.teamOf(player);
     }
 
     /**
      * 分享物品的玩家所在世界的显示名。
      *
-     * <p>和 {@link #neiTeam} 同一个套路：NEI 的广播里没有玩家对象，按名字反查在线玩家，
-     * 再借 GTNHChat 的 {@code ChatFormat.worldName(EntityPlayerMP)} 算 —— 那套别名表
-     * （MV alias / config）已经在 GTNHChat 里了，这边自己再查一遍只会出现两套命名。
-     *
      * <p>为什么非要填：手机端的分组身份带 world，留空的话物品分享会自己另起一组，
      * 既点不开头像，也不和这个人刚说的话并在一起。
      */
     private static String neiWorld(String playerName) {
+        EntityPlayerMP player = onlinePlayer(playerName);
+        return player == null ? "" : GtnChatCompat.worldOf(player);
+    }
+
+    /** 按名字取在线玩家；不在线返回 null */
+    private static EntityPlayerMP onlinePlayer(String playerName) {
+        if (playerName == null || playerName.isEmpty()) return null;
         try {
             MinecraftServer server = MinecraftServer.getServer();
-            if (server == null || server.getConfigurationManager() == null) return "";
+            if (server == null || server.getConfigurationManager() == null) return null;
             Object player = server.getConfigurationManager().func_152612_a(playerName);
-            if (!(player instanceof EntityPlayerMP)) return "";
-            Class<?> fmt = Class.forName("com.huaxidesu.gtnchat.chat.ChatFormat");
-            Object name = fmt.getMethod("worldName", EntityPlayerMP.class).invoke(null, player);
-            return name == null ? "" : ChatFormat.sanitizeName(String.valueOf(name), Config.chatMaxName);
+            return player instanceof EntityPlayerMP ? (EntityPlayerMP) player : null;
         } catch (Throwable t) {
-            return "";
+            return null;
         }
     }
 
@@ -735,23 +733,6 @@ public final class ChatHub {
      * 那个方法在 reobf 后运行时找不到（{@code NoSuchMethodError: func_150254_d}），
      * 一调就把整条服务器广播链路打断 —— 这是 2026-10-30 踩过的坑。
      */
-
-    /** GTNHChat 是否在场（只探测一次；探测失败不影响任何功能） */
-    private static Boolean GTNHCHAT;
-
-    private static boolean gtnhChatPresent() {
-        if (GTNHCHAT == null) {
-            boolean present;
-            try {
-                Class.forName("com.huaxidesu.gtnchat.GTNHChat");
-                present = true;
-            } catch (Throwable t) {
-                present = false;
-            }
-            GTNHCHAT = Boolean.valueOf(present);
-        }
-        return GTNHCHAT.booleanValue();
-    }
 
     /** 文本是否带配置里的 AllMusic 前缀（[AllMusic3] / [肥猫电台] ...） */
     public static boolean isMusicText(String plain) {

@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
  *
  * <p>只生成 {@link ChatComponentText} 字面量，不碰 jsonToComponent / clickEvent / hoverEvent。
  */
-final class ChatFormat {
+public final class ChatFormat {
 
     private static final Pattern MENTION = Pattern.compile("@([A-Za-z0-9_\\u4e00-\\u9fa5]{1,16})");
 
@@ -43,7 +43,7 @@ final class ChatFormat {
     }
 
     /** 名字：不允许颜色码，去掉 [ ] */
-    static String sanitizeName(String raw, int max) {
+    public static String sanitizeName(String raw, int max) {
         return sanitize(raw, max, true, false);
     }
 
