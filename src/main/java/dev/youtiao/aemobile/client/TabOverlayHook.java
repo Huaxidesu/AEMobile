@@ -11,7 +11,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
- * 现代 TAB 兜底钩子。
+ * 现代 TAB 后备渲染钩子。
  *
  * <p>背景：GTNH 客户端里 {@code ServerUtilities} 的 {@code MixinGuiIngameForge_ModernTab}
  * 虽然在 {@code renderPlayerList} HEAD 处 {@code ci.cancel()} 掉了原版样式，但实测
@@ -20,12 +20,12 @@ import org.apache.logging.log4j.Logger;
  * 现代样式又没画，页眉页脚永远出不来。
  *
  * <p>这里不依赖它的 mixin 分支：直接订阅 {@code RenderGameOverlayEvent.Pre(PLAYER_LIST)}，
- * 抢回渲染权并反射调用 SU 自带的 {@code ModernTabRenderer.render(ScaledResolution)}。
- * 好处是**样式、页眉页脚、头像、ping 全部沿用 SU 自己的实现**，我们只负责"叫醒它"；
+ * 夺回渲染权并反射调用 SU 自带的 {@code ModernTabRenderer.render(ScaledResolution)}。
+ * 好处是**样式、页眉页脚、头像、ping 全部沿用 SU 自己的实现**，本模组只负责唤醒该渲染器；
  * 服务器下发 {@code SU|TabHF} 的行为完全不用改。
  *
- * <p>如果 PLAYER_LIST 事件压根没被 post（mixin 分支真的没跑），退而求其次在 CHAT 元素
- * 之后画一次，保证 TAB 一定有内容。
+ * <p>如果 PLAYER_LIST 事件完全未被 post（mixin 分支确实未执行），退而求其次在 CHAT 元素
+ * 之后绘制一次，保证 TAB 一定有内容。
  */
 public final class TabOverlayHook {
 
@@ -60,17 +60,17 @@ public final class TabOverlayHook {
     }
 
     /**
-     * 关掉会跟 SU 抢 TAB 的模组开关（目前只知道 NecroTempus）。
+     * 停用会与 SU 抢占 TAB 的模组开关（目前仅确认 NecroTempus）。
      *
-     * <p>为什么必须关：{@code NecroTempus} 的 {@code PlayerTabDisplayListener} 在
-     * {@code PLAYER_LIST} 的 Pre 里先 {@code setCanceled(true)}，**紧接着自己画一份 tab**。
-     * 本钩子为了让 SU 的渲染器跑起来会把这个 cancel 撤销（{@code setCanceled(false)}）再调
-     * SU 画一次 —— 于是两份 TAB 同时存在于屏幕上，就是玩家看到的"重叠"。
-     * 两边都画无法用事件区分，最干净的做法是让 SU 独占：它的文案来自服务器下发的
+     * <p>为什么必须停用：{@code NecroTempus} 的 {@code PlayerTabDisplayListener} 在
+     * {@code PLAYER_LIST} 的 Pre 里先 {@code setCanceled(true)}，**紧接着自行绘制一份 tab**。
+     * 本钩子为使 SU 的渲染器正常运行会撤销该 cancel（{@code setCanceled(false)}）再调
+     * SU 绘制一次 —— 于是两份 TAB 同时存在于屏幕上，即玩家看到的"重叠"。
+     * 两侧同时绘制无法用事件区分，最干净的做法是让 SU 独占：它的文案来自服务器下发的
      * {@code SU|TabHF}，而 Necro 的 tab 没有页眉页脚。
      *
-     * <p>只在装了 SU 时才动它：没有 SU 的客户端，Necro 的 tab 是唯一实现，不该被关掉。
-     * 该字段是 {@code public static boolean}，Necro 的渲染每帧 {@code getstatic} 现读，
+     * <p>只在安装了 SU 时才修改它：没有 SU 的客户端，Necro 的 tab 是唯一实现，不应被停用。
+     * 该字段是 {@code public static boolean}，Necro 的渲染每帧通过 {@code getstatic} 读取，
      * 所以在 init 阶段改掉立即生效，不需要它重新注册监听器。
      */
     private static void disableCompetingTab() {
@@ -141,7 +141,7 @@ public final class TabOverlayHook {
         try {
             renderMethod.invoke(renderInstance, res);
         } catch (Throwable t) {
-            // 渲染每帧都跑，失败时限流打日志，别把 log 刷爆
+            // 渲染每帧都执行，失败时限流输出日志，避免刷爆日志
             long now = System.currentTimeMillis();
             if (now - lastWarnAt > 5000L) {
                 lastWarnAt = now;
@@ -157,8 +157,8 @@ public final class TabOverlayHook {
      *
      * <p>{@code receiveCanceled = true} 很关键：FML 的 EventBus 默认**不会**把已被取消的事件
      * 派发给后面的监听器。而这类"接管玩家列表"的 mod（例如 BetterPingDisplay）正是先
-     * {@code setCanceled(true)} 再自己画一份原版样式 —— 结果 SU 的 mixin 看到事件被取消就直接
-     * return，页眉页脚永远出不来，我们挂在 LOWEST 的监听器也收不到这个事件。
+     * {@code setCanceled(true)} 再自行绘制一份原版样式 —— 结果 SU 的 mixin 看到事件被取消就直接
+     * return，页眉页脚永远出不来，本模组挂在 LOWEST 的监听器也收不到这个事件。
      */
     @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
     public void onPlayerListPre(RenderGameOverlayEvent.Pre event) {
@@ -172,16 +172,16 @@ public final class TabOverlayHook {
                     holdingTab());
         }
         if (!event.isCanceled() || !holdingTab()) {
-            // 事件没被抢：SU 的 mixin 自己会调用渲染器，我们不要重复画
+            // 事件未被抢占：SU 的 mixin 自己会调用渲染器，本模组不重复绘制
             return;
         }
-        // 事件被别人抢了：夺回渲染权，画 SU 的现代样式，再重新取消掉别人后续的绘制
+        // 事件被其它模组抢占：夺回渲染权，绘制 SU 的现代样式，再重新取消后续绘制
         event.setCanceled(false);
         draw(event.resolution);
         event.setCanceled(true);
     }
 
-    /** 兜底：PLAYER_LIST 事件没来（200ms 内没出现过），就在 CHAT 之后画。 */
+    /** 后备绘制：PLAYER_LIST 事件未触发（200ms 内没出现过），就在 CHAT 之后绘制。 */
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public void onChatPre(RenderGameOverlayEvent.Pre event) {
         if (event.type != RenderGameOverlayEvent.ElementType.CHAT) {

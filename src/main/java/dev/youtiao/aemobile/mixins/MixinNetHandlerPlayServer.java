@@ -24,14 +24,14 @@ import java.lang.reflect.Method;
  *
  * <p><b>取组件必须走反射</b>：直接写 {@code packet.func_148915_c()} 编译能过，
  * 但在 Thermos 上运行时报 {@code NoSuchMethodError}，而且是在玩家登录、
- * 服务端发欢迎消息时触发 —— 整条连接被踢掉（{@code A fatal error has occured}）。
- * 方法名和字段名在不同端上不一样，所以两种都试一遍。
+ * 服务端发欢迎消息时触发 —— 整条连接被强制断开（{@code A fatal error has occured}）。
+ * 方法名和字段名在不同端上不一样，所以两种都尝试一遍。
  *
  * <p><b>本方法体在任何输入下都不允许抛异常</b>：注入点在聊天包的发送路径上，
- * 异常冒出去就是整条连接被踢（2026-11-03 NEI 的时间回显 {@code nei.chat.time}
- * 带 {@code %d}，vanilla 的模板解析器对它直接 throw，当时把点按钮的玩家踢下了线）。
- * 取文本一律走 {@link ChatHub#safeOwnPlain}，整个方法体再有 {@code catch (Throwable)} 兜底；
- * 失败只丢抓取，不 cancel，原包照发。
+ * 异常上抛即整条连接被强制断开（2026-11-03 NEI 的时间回显 {@code nei.chat.time}
+ * 带 {@code %d}，vanilla 的模板解析器对它直接抛出异常，当时把点按钮的玩家断开了连接）。
+ * 取文本一律走 {@link ChatHub#safeOwnPlain}，整个方法体再有 {@code catch (Throwable)} 异常保护；
+ * 失败仅放弃抓取，不 cancel，原包照常发送。
  */
 @Mixin(NetHandlerPlayServer.class)
 public class MixinNetHandlerPlayServer {
@@ -50,7 +50,7 @@ public class MixinNetHandlerPlayServer {
         try {
             if (isNeiLink(component)) {
                 // NEI 的物品链接也是逐个玩家发的（`ServerUtils.sendChatToAll`），同样不走
-                // `sendChatMsg`；不在这里捞，手机端永远看不到别人分享的物品。
+                // `sendChatMsg`；不在这里捕获，手机端永远看不到别人分享的物品。
                 ChatHub.captureServerChat(component);
                 return;
             }

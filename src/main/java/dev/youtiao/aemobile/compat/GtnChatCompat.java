@@ -42,7 +42,7 @@ public final class GtnChatCompat {
 
     /** {@code ChatRelay.forwardAppChat(String, String)} */
     private static Method mForward;
-    /** {@code ChatRelay.clientModPresent(String)}；1.1.0 才有，老版本为 null */
+    /** {@code ChatRelay.clientModPresent(String)}；1.1.0 才有，旧版本为 null */
     private static Method mClientMod;
     /** {@code TeamInfo.of(EntityPlayerMP)} / {@code TeamInfo.available()} */
     private static Method mTeamOf;
@@ -64,8 +64,7 @@ public final class GtnChatCompat {
         if (checked) return;
         checked = true;
         try {
-            // 认这个类而不是 GTNHChat 主类：手机端的数据全靠它推过来，
-            // 它在就说明「聊天元数据桥」这条路是通的
+            // 探测该类而不是 GTNHChat 主类：手机端的数据全靠它推送，它存在即说明「聊天元数据桥」可用
             Class.forName("com.huaxidesu.gtnchat.bridge.MobileBridge");
             present = true;
         } catch (Throwable t) {
@@ -84,7 +83,7 @@ public final class GtnChatCompat {
             fDisplay = field(cfg, "serverDisplay");
             fRelayEnabled = field(cfg, "relayEnabled");
         } catch (Throwable ignored) {
-            // 拿不到本服显示名与跨服开关
+            // 获取不到本服显示名与跨服开关
         }
         try {
             Class<?> teamInfo = Class.forName("com.huaxidesu.gtnchat.chat.TeamInfo");
@@ -132,8 +131,8 @@ public final class GtnChatCompat {
     /**
      * 这台服实际能提供的聊天能力，握手时下发给 App（`HELLO_ACK.caps`）。
      *
-     * <p>没装 GTNHChat 就是空列表 —— App 据此把队伍 / 服务器 / 世界标签整块关掉，
-     * 而不是留一堆点了没反应的入口。
+     * <p>未安装 GTNHChat 时为空列表 —— App 据此把队伍 / 服务器 / 世界标签整块关闭，
+     * 而不是保留点击后无反应的入口。
      */
     public static List<String> caps() {
         check();
@@ -183,7 +182,7 @@ public final class GtnChatCompat {
     /**
      * 本服在群组服里的显示名（GTNHChat 的 {@code Config.serverDisplay}，例如「天空树」）。
      *
-     * <p>没装 GTNHChat 时返回空串 —— 手机端拿不到就不画服务器标签，不猜。
+     * <p>未安装 GTNHChat 时返回空串 —— 手机端获取不到就不绘制服务器标签，不做猜测。
      */
     public static String serverDisplay() {
         check();
@@ -203,7 +202,7 @@ public final class GtnChatCompat {
      * 转发一条手机端聊天，让群组服里的其它后端也能看到。
      *
      * <p>必须在主线程调用（{@code ChatHub.broadcast} 就在主线程）。
-     * 没装 GTNHChat、或那台服的跨服关掉时是空操作。
+     * 未安装 GTNHChat、或该服务器的跨服转发停用时为空操作。
      */
     public static void forwardAppChat(String name, String text) {
         check();
@@ -218,8 +217,8 @@ public final class GtnChatCompat {
     /**
      * 玩家所在队伍，返回 {@code [名字, 颜色码]}；没有队伍或没装模组返回空串对。
      *
-     * <p>NEI 的广播里没有玩家对象，只能按名字反查在线玩家再问 GTNHChat 要 ——
-     * 那套 ServerUtilities 反射已经在它那里写好了，这边不再抄一遍。
+     * <p>NEI 的广播里没有玩家对象，只能按名字反查在线玩家再向 GTNHChat 查询 ——
+     * 那套 ServerUtilities 反射已在 GTNHChat 中实现，本模组不必重复实现。
      */
     public static String[] teamOf(EntityPlayerMP player) {
         check();
@@ -232,14 +231,14 @@ public final class GtnChatCompat {
             Object color = type.getField("color").get(info);
             return new String[] {
                 name == null ? "" : ChatFormat.sanitizeName(String.valueOf(name), Config.chatMaxName),
-                // 颜色只有一个码字符，不走 sanitizeName（那个函数是给名字用的）
+                // 颜色只有一个码字符，不走 sanitizeName（该函数供名字净化使用）
                 color == null ? "" : String.valueOf(color).trim() };
         } catch (Throwable t) {
             return new String[] { "", "" };
         }
     }
 
-    /** 玩家所在世界的显示名；拿不到返回空串 */
+    /** 玩家所在世界的显示名；获取不到时返回空串 */
     public static String worldOf(EntityPlayerMP player) {
         check();
         if (mWorldOf == null || player == null) return "";
@@ -252,10 +251,10 @@ public final class GtnChatCompat {
     }
 
     /**
-     * 这个玩家的客户端装没装 GTNHChat（决定本地成就由谁播）。
+     * 该玩家的客户端是否安装 GTNHChat（决定本地成就由谁播报）。
      *
-     * @return {@code 1} 装了；{@code 0} 没装；{@code -1} 不知道（没装 GTNHChat，
-     *         或对方是没有回执机制的老版本）
+     * @return {@code 1} 已安装；{@code 0} 未安装；{@code -1} 未知（未安装 GTNHChat，
+     *         或对方是没有回执机制的旧版本）
      */
     public static int clientMod(String player) {
         check();

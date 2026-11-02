@@ -46,7 +46,7 @@ public final class ProxyBridge {
     /**
      * 把子服 ServerUtilities 的 TAB 页眉页脚上报给代理，代理按 {@code server} 缓存后下发。
      *
-     * <p>这样 TAB 文案的唯一来源是服务端的 {@code serverutilities.cfg}，代理插件里不用再抄一份；
+     * <p>这样 TAB 文案的唯一来源是服务端的 {@code serverutilities.cfg}，代理插件里不必再复制一份；
      * 调用方应当放到后台线程（本方法会同步等代理回一行 JSON）。
      *
      * @param server BC 里的子服名；留空即可，代理会用 {@code port} 自动反查，查不到才落到通配

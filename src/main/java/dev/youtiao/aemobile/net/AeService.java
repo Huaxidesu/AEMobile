@@ -37,9 +37,9 @@ import java.util.Set;
  *
  * <p><b>线程模型</b>：这些方法都在网络线程（TCP 读线程 / 推送定时器线程）里调用，
  * <b>不要</b>搬到主线程 —— {@code TileAEMonitor} 的查询内部会往它自己的 {@code tasks}
- * 队列塞任务并 {@code FutureTask.get()} 等 {@code updateEntity()}（主线程 tick）执行，
- * 在主线程调就是自己等自己，会把服务器卡死（2026-10-28 真服务器踩过，看门狗 90s 杀服）。
- * 真正需要主线程的活儿由 tile 的队列自己处理。
+ * 队列放入任务并 {@code FutureTask.get()} 等 {@code updateEntity()}（主线程 tick）执行，
+ * 在主线程调用等于自己等待自己，会把服务器阻塞成死锁（2026-10-28 在实际服务器上发生过，看门狗 90s 终止服务进程）。
+ * 真正需要主线程的工作由 tile 的队列自己处理。
  */
 public final class AeService {
 
@@ -55,12 +55,12 @@ public final class AeService {
      */
     private static final long INTERVAL_CHAT = 500L;
 
-    /** 计划模拟最多跑这么多轮（每轮 1500 个节点），防止病态配方把线程钉死 */
+    /** 计划模拟最多执行这么多轮（每轮 1500 个节点），防止病态配方把线程钉死 */
     private static final int PLAN_MAX_ROUNDS = 2000;
 
     /**
-     * plan 是唯一会长时间占主线程的 op（一次几十到几百毫秒）。
-     * 30 人服务器上必须限住：全局最多同时算 PLAN_SLOTS 个，单个 token 也不能连点。
+     * plan 是唯一会长时间占用主线程的 op（一次几十到几百毫秒）。
+     * 30 人服务器上必须限制：全局最多同时计算 PLAN_SLOTS 个，单个 token 也不允许连续请求。
      */
     private static final java.util.concurrent.Semaphore PLAN_SLOTS =
             new java.util.concurrent.Semaphore(3);
@@ -107,14 +107,14 @@ public final class AeService {
 
         // ⚠️ 绝对不要在这里 initDimension / getChunkFromChunkCoords。
         // 2026-10-28 实测：从 ServerTickEvent 里调 initDimension(180) 会把主线程**死锁**
-        // （区块加载要等主线程 tick，而主线程正卡在这个任务里），Spigot 看门狗 90 秒后直接把服务器杀了。
-        // 所以只查「已经加载好」的维度/区块，没加载就如实报错，让玩家进一次该维度或加区块加载器。
+        // （区块加载要等主线程 tick，而主线程正阻塞在这个任务里），Spigot 看门狗 90 秒后终止服务器进程。
+        // 所以只查「已经加载好」的维度/区块，未加载就如实报错，让玩家进入一次该维度或添加区块加载器。
         World world = DimensionManager.getWorld(dimid);
         if (world == null) return null;
 
         TileEntity te = world.getTileEntity(x, y, z);
         if (!(te instanceof TileAEMonitor)) {
-            // 区块是加载着的但方块不在 → 记录确实过期，摘掉（区块没加载时不动，避免偶发失败误删）
+            // 区块是加载着的但方块不在 → 记录确实过期，移除（区块未加载时不动，避免偶发失败误删）
             if (world.blockExists(x, y, z)) {
                 tuples.remove(target);
             }
@@ -283,13 +283,13 @@ public final class AeService {
      * 构造一条推送帧（全量 / 增量 / 心跳）。
      *
      * <p><b>必须在网络线程调，不能在主线程调</b>：{@code TileAEMonitor} 的这些查询内部会
-     * 往它自己的 {@code tasks} 队列塞一个 FutureTask，然后 {@code ft.get()} 等
-     * {@code updateEntity()}（主线程 tick）执行 —— 在主线程调就是自己等自己，直接死锁
-     * （2026-10-28 真服务器上把整个服卡死过，看门狗 90s 杀服）。
+     * 往它自己的 {@code tasks} 队列放入一个 FutureTask，然后 {@code ft.get()} 等
+     * {@code updateEntity()}（主线程 tick）执行 —— 在主线程调用等于自己等待自己，直接死锁
+     * （2026-10-28 在实际服务器上把整个服务阻塞过，看门狗 90s 终止服务进程）。
      */
     static Map<String, Object> pushFrame(String token, String op, JsonNode p, StreamState st) throws Exception {
-        // TPS 是全局数据：不依赖监控器坐标，也不碰 AE2 —— 必须放在 tile() 前面，
-        // 否则玩家离线/维度没加载时监控页会跟着一起「不可用」。
+        // TPS 是全局数据：不依赖监控器坐标，也不访问 AE2 —— 必须放在 tile() 前面，
+        // 否则玩家离线/维度未加载时监控页会跟着一起「不可用」。
         if ("tps".equals(op)) {
             Map<String, Object> body = tpsBody(p, false);
             if (body == null) return FrameBuilder.error("TPS 尚未开始采集，请等一两秒再试");
@@ -434,8 +434,8 @@ public final class AeService {
             }
 
             // 分片模拟：每片 1500 个节点，片之间回一条进度。
-            // 每一片都必须回主线程跑（tile.simulatePlanShard）：AE2 的 ItemList / 合成上下文
-            // 不是线程安全的，在 TCP 线程碰会和 tick 里的机器抢同一批集合（2026-10-28 崩服事故）。
+            // 每一片都必须回主线程执行（tile.simulatePlanShard）：AE2 的 ItemList / 合成上下文
+            // 不是线程安全的，在 TCP 线程访问会和 tick 里的机器争用同一批集合（2026-10-28 崩服事故）。
             for (int round = 0; round < PLAN_MAX_ROUNDS; round++) {
                 TileAEMonitor.PlanShard shard = tile.simulatePlanShard(job, 1500);
                 if (shard.done) {

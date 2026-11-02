@@ -55,7 +55,7 @@ public class CommonProxy {
                         Item.itemRegistry.getObject("appliedenergistics2:item.ItemBasicStorageCell.16k")
                         ,'#',Item.itemRegistry.getObject("appliedenergistics2:tile.BlockFluix")}
         );
-        // MSPT 监听已移除（2026-10-27）：MSPT 监控整体砍掉，/api/serverMSPT 由以后的服务端插件提供
+        // MSPT 监听已移除（2026-10-27）：MSPT 监控已整体移除，/api/serverMSPT 由以后的服务端插件提供
     }
 
     public void serverAboutToStart(FMLServerAboutToStartEvent event) {
@@ -68,19 +68,19 @@ public class CommonProxy {
         event.registerServerCommand(new dev.youtiao.aemobile.command.CommandAEMobileServer());
     }
 
-    /** 事件处理器只注册一次：单机退出到主菜单再进另一个世界时 serverStarted 会再跑一遍 */
+    /** 事件处理器只注册一次：单机退出到主菜单再进另一个世界时 serverStarted 会再次执行 */
     private static boolean eventsRegistered = false;
 
     public void serverStarted(FMLServerStartedEvent event) {
-        // 只有**专用服务器**才起 TCP 监听和采集。
-        // 单人游戏里这个事件也会触发（集成服务器），以前会把 44444 也监听起来 ——
-        // 玩家自己开单机时白占一个端口，而且客户端 jar 里根本不需要这套东西。
-        // 注意：FMLServerStartedEvent 没有 getServer()，得从 MinecraftServer 拿。
+        // 只有**专用服务器**才启动 TCP 监听和采集。
+        // 单人游戏里这个事件也会触发（集成服务器），以前会连 44444 一起监听 ——
+        // 玩家自行开启单机时会无谓占用一个端口，而且客户端 jar 里根本不需要这套东西。
+        // 注意：FMLServerStartedEvent 没有 getServer()，需从 MinecraftServer 获取。
         net.minecraft.server.MinecraftServer mcServer = net.minecraft.server.MinecraftServer.getServer();
         if (mcServer == null || !mcServer.isDedicatedServer()) return;
-        // 协议 3.0.0：不再起 Spring/Tomcat，直接开 TCP 监听（端口见 config 的 [server] port）
+        // 协议 3.0.0：不再启动 Spring/Tomcat，直接开启 TCP 监听（端口见 config 的 [server] port）
         // 启动前先从 playerdata 恢复 token 表和监控器坐标表：
-        // 不这么做的话，重启后没人走到监控器附近时 App 会误报「密码错误」。
+        // 不这么做的话，重启后无人进入监控器附近加载区块时 App 会误报「密码错误」。
         dev.youtiao.aemobile.net.MonitorRegistry.loadFromPlayerData();
         TcpServer.start(AEMobile.port);
         // TPS/MSPT 采集（总体 + 逐维度）：两个 TickEvent 都在主线程，只累加 long
@@ -107,7 +107,7 @@ public class CommonProxy {
         dev.youtiao.aemobile.net.ChatHub.start();
         dev.youtiao.aemobile.debug.DebugBridge.startServer();
         // 聊天能力是「探测到才有」：没装 GTNHChat 时队伍/服务器/世界标签整体关闭，
-        // 手机端靠握手里的 caps 知道这一点。这一行让服主一眼看出当前是哪一档。
+        // 手机端靠握手里的 caps 知道这一点。该日志让服主可直接确认当前是哪一档。
         AEMobile.info("[AEMobile] " + dev.youtiao.aemobile.compat.GtnChatCompat.describe());
     }
 

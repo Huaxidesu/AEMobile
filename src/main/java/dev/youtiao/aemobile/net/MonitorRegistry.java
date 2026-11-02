@@ -28,9 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 监控器注册表 / token 表的持久化。
  *
  * <p><b>为什么需要这个类</b>：3.0.0 之前，token 只在 {@code TileAEMonitor.readFromNBT} 里登记，
- * 而那个方法只有在**监控器所在区块被加载**时才会跑。结果：服务器重启后，只要没人走到监控器附近，
- * 服务端手上的 token 表就是空的 —— App 拿着正确密码也会被回 {@code AUTH_FAILED}，
- * 界面上显示「密码错误」，非常误导（2026-10-27 在真服务器上实际踩到）。
+ * 而那个方法只有在**监控器所在区块被加载**时才会执行。结果：服务器重启后，只要无人进入监控器附近，
+ * 服务端内存中的 token 表就是空的 —— App 使用正确密码也会收到 {@code AUTH_FAILED}，
+ * 界面上显示「密码错误」，非常误导（2026-10-27 在实际服务器上发生过）。
  *
  * <p>解决办法：把「token」和「监控器坐标」都写进<b>玩家的持久化 NBT</b>
  * （{@code PlayerPersisted}，跟区块加载无关），启动时扫一遍 {@code world/playerdata/*.dat}
@@ -51,7 +51,7 @@ public final class MonitorRegistry {
      * owner UUID → 当前 token。
      *
      * <p>重置绑定码后，未加载区块里的 tile 仍会从自己的 NBT 读旧 token；靠这张表在
-     * {@code TileAEMonitor.readFromNBT} 里覆盖，旧码才不会「复活」。
+     * {@code TileAEMonitor.readFromNBT} 里覆盖，旧码才不会重新生效。
      */
     private static final Map<UUID, String> BY_OWNER = new ConcurrentHashMap<UUID, String>();
     /** token → owner UUID（App 的 music 请求需要知道是谁在点歌） */
@@ -69,7 +69,7 @@ public final class MonitorRegistry {
     // ------------------------------------------------------------ 写入
 
     /**
-     * 把监控器坐标记进玩家持久化 NBT（去重）。放置方块、以及 tile 加载时顺手迁移老存档都会调。
+     * 把监控器坐标记进玩家持久化 NBT（去重）。放置方块、以及 tile 加载时迁移旧存档都会调用。
      */
     public static void rememberMonitor(EntityPlayer player, int dimid, int x, int y, int z) {
         if (player == null) return;
@@ -168,7 +168,7 @@ public final class MonitorRegistry {
         return owner == null ? null : BY_OWNER.get(owner);
     }
 
-    /** 停服/切世界时清空，避免不同存档的 owner 表串档 */
+    /** 停止服务器/切换世界时清空，避免不同存档的 owner 表串档 */
     public static void clear() {
         BY_OWNER.clear();
         TOKEN_OWNER.clear();
@@ -178,8 +178,8 @@ public final class MonitorRegistry {
     /**
      * 重置玩家的绑定码。
      *
-     * <p>只改内存与玩家 NBT，不加载区块：已加载的监控器顺手改掉，没加载的等以后
-     * {@code readFromNBT} 时用 {@link #currentToken} 解析成新码。调用方负责踢掉旧连接
+     * <p>只改内存与玩家 NBT，不加载区块：已加载的监控器一并改掉，未加载的等以后
+     * {@code readFromNBT} 时用 {@link #currentToken} 解析成新码。调用方负责强制断开旧连接
      * （{@code TcpServer.closeByToken(reset.oldToken)}）。
      *
      * <p>必须在主线程调。
@@ -196,7 +196,7 @@ public final class MonitorRegistry {
             Set<TileAEMonitor.PosTuple> known = TileAEMonitor.tilesInTheWorld.remove(old);
             if (known != null) coords.addAll(known);
         }
-        // 老存档的兜底码（UUID 首段）也要一起废掉，否则它仍然能访问。
+        // 旧存档的后备码（UUID 首段）也要一并注销，否则它仍然能访问。
         UUID owner = player.getUniqueID();
         String fallback = owner == null ? "" : owner.toString().split("-")[0].toUpperCase(Locale.ROOT);
         if (!fallback.isEmpty() && !fallback.equals(old)) {
@@ -213,7 +213,7 @@ public final class MonitorRegistry {
         }
 
         // 旧 tile 的 NBT / 崩溃残留可能给同一批坐标登记过别的 token，一并注销，
-        // 否则那些 token 仍能鉴权（TCP 连接自检也会兜底，但这里先把表清干净）。
+        // 否则那些 token 仍能鉴权（TCP 连接自检也会作为后备保护，但这里先把表清干净）。
         List<String> staleTokens = new ArrayList<String>();
         for (Map.Entry<String, Set<TileAEMonitor.PosTuple>> e : TileAEMonitor.tilesInTheWorld.entrySet()) {
             if (e.getKey().equals(old) || e.getKey().equals(fallback)) continue;
@@ -307,7 +307,7 @@ public final class MonitorRegistry {
                 if (root == null) continue;
                 // 注意层级：持久化 NBT 不在根上，而是 root.ForgeData.PlayerPersisted。
                 // （Entity.getEntityData() 读的是 "ForgeData"，PERSISTED_NBT_TAG 是它下面的键。
-                //   2026-10-28 在真存档上踩过：直接读根永远拿不到。）
+                //   2026-10-28 在真实存档上验证过：直接读根始终获取不到。）
                 NBTTagCompound forgeData = root.getCompoundTag(FORGE_DATA_TAG);
                 if (!forgeData.hasKey(EntityPlayer.PERSISTED_NBT_TAG)) continue;
 

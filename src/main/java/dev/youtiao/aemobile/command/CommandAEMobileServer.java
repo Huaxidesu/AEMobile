@@ -28,8 +28,8 @@ import java.util.Locale;
  * 服务端命令：
  * <ul>
  *   <li>{@code /aemobile stats [reset]} —— TCP 推送统计（扫描耗时 / 帧体积 / 调度占用）；</li>
- *   <li>{@code /aemobile tps} —— 打印我们自己的 TPS/MSPT 表，<b>并顺手跑一次 {@code /cofh tps}
- *       把它的原文也打出来</b>，一条命令完成对表；结果同时写到
+ *   <li>{@code /aemobile tps} —— 打印本模组自己的 TPS/MSPT 表，<b>并同时执行一次 {@code /cofh tps}
+ *       将其原文一并输出</b>，一条命令完成对照；结果同时写到
  *       {@code dumps/aemobile/tps-compare.txt}，AI/脚本不用解析聊天记录；</li>
  *   <li>{@code /aemobile dims} —— 导出维度清单（dimid / 世界名 / provider 名 / 最终显示名），
  *       补内置中文表时用。</li>
@@ -107,7 +107,7 @@ public class CommandAEMobileServer extends CommandBase {
             sender.addChatMessage(new ChatComponentText(EnumChatFormatting.RED + getCommandUsage(sender)));
             return;
         }
-        // 顺手落盘一份，方便外部读取（AI/脚本不用解析聊天记录）
+        // 同时落盘一份，方便外部读取（AI/脚本不用解析聊天记录）
         Metrics.dump(DebugBridge.serverDir(), 0);
         sender.addChatMessage(new ChatComponentText(EnumChatFormatting.AQUA + "[AEMobile] " + Metrics.json()));
     }
@@ -167,7 +167,7 @@ public class CommandAEMobileServer extends CommandBase {
     // ------------------------------------------------------------ say
     /**
      * {@code /aemobile say <text>}：从服务端广播一行聊天，用来验证「服务器聊天进 App」。
-     * 权限 2；真正的广播还是走 {@code sendChatMsg}，所以顺带覆盖了 Mixin 的抓取路径。
+     * 权限 2；真正的广播还是走 {@code sendChatMsg}，所以同时覆盖了 Mixin 的抓取路径。
      */
     private void broadcastTest(ICommandSender sender, String[] args) {
         if (args.length < 2) {
@@ -197,8 +197,8 @@ public class CommandAEMobileServer extends CommandBase {
      * {@code /aemobile debug <类型> <名字> [内容]}：直接往聊天流里造一条消息。
      *
      * <p>本机测试服没有真实玩家时，`ServerChatEvent` / `AchievementEvent` / 进出事件都走不到，
-     * 手机端就没法验证。这里绕过事件源直接塞给 {@code ChatHub}，
-     * App 收到的东西和真玩家发的一样（同样的 kind、同样的颜色码处理）。
+     * 手机端就无法验证。这里绕过事件源直接写入 {@code ChatHub}，
+     * App 收到的消息与真实玩家发送的一致（同样的 kind、同样的颜色码处理）。
      *
      * <p>类型：{@code chat}（游戏公屏）/ {@code app}（手机）/ {@code join} / {@code leave}
      * / {@code server}（服务器广播）/ {@code achievement}（成就，内容是成就名）。
@@ -262,7 +262,7 @@ public class CommandAEMobileServer extends CommandBase {
                     w.personal ? "(家园)" : ""));
         }
 
-        // 对表：执行一次 cofh tps，把它的聊天输出抓下来
+        // 对照：执行一次 cofh tps，把它的聊天输出捕获下来
         out.add("");
         out.add("## /cofh tps 原文");
         long t0 = System.nanoTime();

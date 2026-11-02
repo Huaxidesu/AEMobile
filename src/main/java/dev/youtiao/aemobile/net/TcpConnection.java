@@ -48,9 +48,9 @@ final class TcpConnection implements Runnable {
      * 真 token 是 26 位随机字符，不可能出现 NUL 字符。
      */
     private static final String GUEST_TOKEN_PREFIX = "\0guest:";
-    /** 游客 token 的序号段：token 是聊天限流的键，每条连接要不一样，否则一个刷屏的游客会吃掉所有人的配额 */
+    /** 游客 token 的序号段：token 是聊天限流的键，每条连接要不一样，否则一个刷屏的游客会占用所有人的配额 */
     private static final AtomicInteger GUEST_SEQ = new AtomicInteger();
-    /** 当前在线游客数（总连接上限 32，游客要单独配额，不能挤掉正式用户） */
+    /** 当前在线游客数（总连接上限 32，游客要单独配额，不能挤占正式用户的额度） */
     private static final AtomicInteger GUEST_CONNS = new AtomicInteger();
 
     private final TcpServer server;
@@ -83,7 +83,7 @@ final class TcpConnection implements Runnable {
         volatile long due;
         /** chat 专用：已经发到哪一条（服务端消息 seq） */
         volatile long cursor;
-        /** chat 专用：是否要玩家加入/退出事件（老 App 不带这个参数） */
+        /** chat 专用：是否要玩家加入/退出事件（旧版 App 不带这个参数） */
         volatile boolean events;
 
         Sub(int id, String op, JsonNode params, StreamState state, long intervalMs) {
@@ -166,7 +166,7 @@ final class TcpConnection implements Runnable {
                 sendFrame(Protocol.T_PONG, null);
                 break;
             default:
-                // 未知帧类型：忽略，别把连接搞死（方便以后加帧）
+                // 未知帧类型：忽略，不中断连接（方便以后加帧）
                 break;
         }
     }
@@ -190,17 +190,17 @@ final class TcpConnection implements Runnable {
         m.put("time", System.currentTimeMillis() / 1000L);
         m.put("nonce", nonce);
         // 本服在群组服里的显示名（GTNHChat 的 Config.serverDisplay）。
-        // 手机端拿它区分「本服」和「别的服」—— 本服消息的来源标签显示成灰色，跨服的才用配置色。
-        // 没装 GTNHChat 时是空串，手机端就一视同仁。
+        // 手机端拿它区分「本服」和「其它服务器」—— 本服消息的来源标签显示成灰色，跨服的才用配置色。
+        // 未安装 GTNHChat 时是空串，手机端一视同仁。
         m.put("srv", GtnChatCompat.serverDisplay());
         // 这台服实际能提供的可选能力（聊天格式化 / 队伍 / 世界名 / 跨服）。
         // App 据此决定要不要显示队伍·服务器·世界标签、要不要给「标签常驻」这个样式 ——
-        // 没装的服上那些 UI 直接不出现，而不是留着点了没反应。老 App 忽略这个字段。
+        // 未安装的服务器上那些 UI 直接不出现，而不是保留点击后无反应的入口。旧版 App 忽略这个字段。
         m.put("caps", GtnChatCompat.caps());
-        // 本服开没开「游客只读聊天」。App 的首次配置页据此决定要不要给「仅使用聊天功能」这个入口
-        // （老服务端没有这个字段，App 按「不支持」处理）
+        // 本服是否启用「游客只读聊天」。App 的首次配置页据此决定要不要给「仅使用聊天功能」这个入口
+        // （旧服务端没有这个字段，App 按「不支持」处理）
         m.put("guest", Config.chatGuest);
-        // 游客能不能发言（[chat] guestSay）。老服务端没这个字段，App 按「只读游客」处理
+        // 游客能不能发言（[chat] guestSay）。旧服务端没有这个字段，App 按「只读游客」处理
         m.put("guestsay", Config.chatGuestSay);
         sendFrame(Protocol.T_HELLO_ACK, m);
     }
@@ -254,7 +254,7 @@ final class TcpConnection implements Runnable {
         String canonical = "AE2TCP\n" + ts + "\n" + nonce;
         java.util.List<String> candidates = AuthTokens.candidates(kid);
         if (candidates.isEmpty()) {
-            // 没这个 kid：多半是密码抄错/少一位（前 8 位对不上）
+            // 没这个 kid：多半是密码输入错误/少一位（前 8 位对不上）
             AEMobile.warn("[AEMobile] 鉴权失败：kid=" + kid + " 不存在（" + ip + "）");
         }
         for (String candidate : candidates) {
@@ -301,7 +301,7 @@ final class TcpConnection implements Runnable {
             return;
         }
         if (guest && !("chatSend".equals(op) && Config.chatGuestSay)) {
-            // 游客只能聊公屏（guestSay 开着还能发）：查物品、点歌、TPS 全部挡在这里
+            // 游客只能聊公屏（guestSay 启用时还可发言）：查物品、点歌、TPS 全部拦截在这里
             sendRes(id, false, null, "GUEST_READONLY", false);
             return;
         }
@@ -403,7 +403,7 @@ final class TcpConnection implements Runnable {
         }
 
         // sid 由客户端带上来：断线重连时服务端能接着发增量，不用重建索引。
-        // 先把「同 sid 的旧订阅」从其它连接上摘掉：旧连接可能只是半开（服务端还没超时），
+        // 先把「同 sid 的旧订阅」从其它连接上移除：旧连接可能只是半开（服务端还没超时），
         // 两边共用一份 StreamState 会让新客户端漏掉旧连接推进过的那部分变化。
         String resumeSid = Json.strOf(root, "sid", null);
         if (resumeSid != null && !resumeSid.isEmpty()) server.detachSid(resumeSid, this);
@@ -420,7 +420,7 @@ final class TcpConnection implements Runnable {
         sendFrame(Protocol.T_SUB_OK, m);
     }
 
-    /** 把指定 sid 的订阅从本连接摘掉（新连接接管断线续传时用） */
+    /** 把指定 sid 的订阅从本连接移除（新连接接管断线续传时用） */
     void detachStream(String sid) {
         if (sid == null) return;
         for (Sub sub : subs.values()) {
@@ -477,7 +477,7 @@ final class TcpConnection implements Runnable {
                 Metrics.scan(sub.op, ms, !"e".equals(type));
                 Metrics.frame(sub.op, String.valueOf(type), bytes);
             } catch (Exception e) {
-                // 主线程超时（区块没加载、服务器卡顿）：跳过这一帧，下一轮再试
+                // 主线程超时（区块未加载、服务器失去响应）：跳过这一帧，下一轮再试
                 Metrics.scan(sub.op, (System.nanoTime() - t0) / 1000000L, false);
                 AEMobile.debug("[AEMobile] 推送失败 " + sub.op + ": " + e);
             }
@@ -493,7 +493,7 @@ final class TcpConnection implements Runnable {
         return subs.size();
     }
 
-    /** 这条连接鉴权时用的 token（重置绑定码时按它踢人） */
+    /** 这条连接鉴权时用的 token（重置绑定码时按它强制断开连接） */
     String token() {
         return token;
     }
@@ -512,7 +512,7 @@ final class TcpConnection implements Runnable {
             return 0;
         }
         if (!outbox.offer(bos.toByteArray())) {
-            // 客户端不读数据（挂死的手机）：断开，别让队列无限涨
+            // 客户端不读数据（挂起的手机）：断开，避免队列无限增长
             close("outbox-full");
         }
         return body.length;

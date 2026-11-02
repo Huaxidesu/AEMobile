@@ -228,7 +228,7 @@ public final class ClientDebugBridge {
         if (held == null) return "empty-hand";
         try {
             // 必须用 NEI 自己的序列化：服务端是 StackInfo.loadFromNBT 解析的，
-            // 喂原版 ItemStack.writeToNBT 的格式会解析成 null，然后 getDisplayName() NPE。
+            // 传入原版 ItemStack.writeToNBT 的格式会解析成 null，然后 getDisplayName() NPE。
             Class<?> stackInfo = Class.forName("codechicken.nei.recipe.StackInfo");
             Object item = stackInfo.getMethod("itemStackToNBT", ItemStack.class).invoke(null, held);
             net.minecraft.nbt.NBTTagCompound payload = new net.minecraft.nbt.NBTTagCompound();

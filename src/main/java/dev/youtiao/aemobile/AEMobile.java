@@ -11,7 +11,7 @@ import org.apache.logging.log4j.Logger;
  * 版本策略（2026-11-01）：
  *
  * <p>{@code acceptableRemoteVersions = "[3.4.0,)"} —— 客户端只要 **≥ 3.4.0** 就能连，
- * 服务端以后随便升版本都不再踢人。Forge 默认要求两边版本**完全一致**，所以以前每次发版
+ * 服务端后续升级版本也不再断开旧客户端连接。Forge 默认要求两边版本**完全一致**，所以以前每次发版
  * 玩家都得换 jar，这是「模组服分发模组很麻烦」的根源。
  *
  * <p>能这么放宽是因为：App 走的是**裸 TCP**（端口见 config），聊天/TPS/AE 查询这些功能
@@ -55,8 +55,8 @@ public class AEMobile {
     public void preInit(FMLPreInitializationEvent event) {
         Configuration config = new Configuration(event.getSuggestedConfigurationFile());
         config.load();
-        // 协议 3.0.0：mod 自己开一个裸 TCP 端口（不再有 Tomcat/WebUI）。
-        // 端口占用会导致启动失败（只打日志，不影响服务器本体），需要在这里改。
+        // 协议 3.0.0：mod 自行监听一个裸 TCP 端口（不再有 Tomcat/WebUI）。
+        // 端口占用会导致启动失败（仅输出日志，不影响服务器本体），需要在这里改。
         port = config.get("server", "port", 44444,
                 "TCP port of the AEMobile protocol (the port you type in the app). Default 44444.").getInt();
         // 运行时统计：只累加计数，不改变任何行为，用来判断该优化哪一段（默认开）

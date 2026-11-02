@@ -23,8 +23,8 @@ import java.util.Map;
  *   <li><b>config 覆盖</b>（{@code [tps] names} 里的 {@code DIM70=暮色森林} / {@code 70=暮色森林}）；</li>
  *   <li><b>内置维度表</b>（按 dimid，覆盖原版 + GTNH 常用维度）；</li>
  *   <li><b>内置英文表</b>（按 {@code WorldProvider.getDimensionName()} 的英文名，覆盖星系行星）；</li>
- *   <li>家园世界兜底成 {@code 家园 #180}；</li>
- *   <li>再兜底 provider 英文名，最后是世界文件夹名。</li>
+ *   <li>家园世界缺省名为 {@code 家园 #180}；</li>
+ *   <li>再退到 provider 英文名，最后是世界文件夹名。</li>
  * </ol>
  *
  * <p><b>为什么不拿 MV 的 worlds.yml 当世界清单</b>：星系（GalaxySpace）生成的世界经常不会写进去，

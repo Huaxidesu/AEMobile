@@ -49,7 +49,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * </ul>
  *
  * <p>线程模型：{@code onChat} / {@code drainOutbound} 在主线程（服务端 tick）；
- * {@link #send} 在 TCP 读线程（只做过滤、限流、入环、把广播任务塞进队列）；
+ * {@link #send} 在 TCP 读线程（只做过滤、限流、入环、把广播任务加入队列）；
  * {@link #drain} 在 TCP 推送定时器线程（只读不可变快照）。
  */
 public final class ChatHub {
@@ -71,11 +71,11 @@ public final class ChatHub {
 
     /** 投递缓冲条数（不是历史存储） */
     private static final int BUFFER = 128;
-    /** 缓冲里的消息超过这个年龄就丢掉 */
+    /** 缓冲里的消息超过这个年龄即丢弃 */
     private static final long TTL_MS = 30000L;
     /** 一帧最多带多少条，防止刚订阅时一次吐几百条 */
     private static final int MAX_PER_FRAME = 40;
-    /** 广播队列上限：刷屏时丢弃，别让主线程被拖住 */
+    /** 广播队列上限：刷屏时丢弃，避免主线程被拖慢 */
     private static final int OUTBOX_MAX = 200;
     /** 服务器广播去重窗口 */
     private static final long SERVER_DEDUPE_MS = 800L;
@@ -125,8 +125,8 @@ public final class ChatHub {
         /**
          * 玩家所在世界的显示名（GTNHChat 已经按 Multiverse 别名 / config 表换好中文）。
          *
-         * <p>空串表示不知道：服务器广播、App 消息、老版本 GTNHChat 都没有这个字段。
-         * App 拿不到就只显示服务器和队伍，不画世界标签。
+         * <p>空串表示未知：服务器广播、App 消息、旧版本 GTNHChat 都没有这个字段。
+         * App 获取不到时只显示服务器和队伍，不绘制世界标签。
          */
         public final String world;
 
@@ -224,8 +224,8 @@ public final class ChatHub {
          *
          * <p><b>必须是 LOWEST 优先级</b>：装了 GTNHChat 时它会在 NORMAL 优先级取消这个事件、
          * 自己渲染再广播，并在广播前把元数据交给 {@link #acceptFormatted}。以前靠「它注册得早」
-         * 侥幸避开了重复入队，注册顺序一变手机端每条聊天就会收两份 —— 现在把顺序写死在这里，
-         * 顺便把「已被取消」也显式挡掉。
+         * 偶然避开了重复入队，注册顺序一变手机端每条聊天就会收到两份 —— 现在把优先级固定在这里，
+         * 同时显式拦截「已被取消」的事件。
          */
         @SubscribeEvent(priority = EventPriority.LOWEST)
         public void onChat(ServerChatEvent event) {
@@ -245,26 +245,26 @@ public final class ChatHub {
             if (!Config.chatEnabled || !Config.chatAchievements || !hasSubscribers()) return;
             if (event.entityPlayer == null || event.achievement == null) return;
             String who = event.entityPlayer.getCommandSenderName();
-            // 成就公告由谁发，看**这台客户端**装没装 GTNHChat：
-            //   GTNHChat 的成就是客户端上报驱动的，客户端没装它自己也播不出来 ——
-            //   以前这里一律「装了 GTNHChat 就让路」，结果客户端没装时两边都不发，
+            // 成就公告由谁发，看**这台客户端**是否安装 GTNHChat：
+            //   GTNHChat 的成就是客户端上报驱动的，客户端未安装时它自己也播不出来 ——
+            //   以前这里一律「装了 GTNHChat 就避让」，结果客户端未安装时两侧都不发，
             //   手机端一条成就都收不到（本机就是这个配置）。
-            // 客户端确实装了（1）或老版本没法判断（-1）时才让路，保持老行为。
+            // 客户端确实已安装（1）或旧版本无法判断（-1）时才避让，保持旧行为。
             if (GtnChatCompat.clientMod(who) != 0) return;
             // 1.7.10 的 AchievementEvent 是「加了统计」而不是「刚解锁」：
             // 「打开背包」(Taking Inventory) 每开一次背包就 addStat 一次，
-            // 只按时间窗去重的话，隔几秒开一次就刷一条。所以按「本次登录第一次见到」算。
+            // 只按时间窗去重的话，隔几秒开一次就会出现一条。所以按「本次登录第一次见到」判定。
             String statId = event.achievement.statId;
             if (statId == null || !firstAchievement(who, statId)) return;
             // 成就名走 StatBase.func_150951_e()（1.7.10 只有这一个取法）；服务端语言是 en_US，
-            // 拿不到中文。拿不到名字时退到 statId 并去掉 achievement. 前缀。
+            // 获取不到中文。名字获取不到时退回 statId 并去掉 achievement. 前缀。
             String name = "";
             try {
                 IChatComponent comp = event.achievement.func_150951_e();
                 if (comp != null) name = comp.getUnformattedText();
             } catch (Throwable ignored) {
             }
-            // 成就名里可能带颜色码（`§c§lKuba's Hibiscus Tea` 这种），手机端不解析，先清掉
+            // 成就名里可能带颜色码（如 `§c§lKuba's Hibiscus Tea`），手机端不解析，先清除
             name = ChatFormat.plain(name);
             // 有些模组的成就没有 en_US 条目，func_150951_e() 直接把语言 key 原样返回
             // （`achievement.enhanced_charm_of_dislocation`）。这种也退回 statId 并去掉下划线，
@@ -280,7 +280,7 @@ public final class ChatHub {
 
     /**
      * 玩家进出：只进 App 聊天流，不往游戏公屏广播（游戏本来就有自己的提示）。
-     * 挂在 FML 总线上；没人订阅或配置关掉时第一行就 return，零开销。
+     * 挂在 FML 总线上；没人订阅或配置停用时第一行就 return，零开销。
      */
     public static final class PlayerEvents {
         @SubscribeEvent
@@ -312,7 +312,7 @@ public final class ChatHub {
     /**
      * App 发一条消息。返回分配到的 seq；参数不合法时抛 {@link ChatException}。
      *
-     * <p>在 TCP 读线程调用：只做过滤、限流、入环，真正的广播丢给主线程 tick。
+     * <p>在 TCP 读线程调用：只做过滤、限流、入环，真正的广播交给主线程 tick。
      */
     static long send(String token, String rawName, String rawText) {
         if (!Config.chatEnabled) throw new ChatException("CHAT_DISABLED");
@@ -384,7 +384,7 @@ public final class ChatHub {
         // 群组服：手机端的消息不经过 ServerChatEvent，GTNHChat 的跨服转发收不到，
         // 这里补一次。没装 GTNHChat 时是空操作，不会多花任何东西。
         GtnChatCompat.forwardAppChat(name, ChatFormat.plain(text));
-        // 服务端日志留档，便于事后查水表（聊天本身不存储）
+        // 服务端日志留档，便于事后审计（聊天本身不存储）
         AEMobile.info("[AEMobile][聊天] " + name + ": " + ChatFormat.plain(text));
     }
 
@@ -413,7 +413,7 @@ public final class ChatHub {
      *
      * @param since 客户端上次收到的最大 seq
      * @param max   一帧最多几条
-     * @param includeEvents 是否把「玩家加入/退出」也发出去（老 App 不带这个参数就不发）
+     * @param includeEvents 是否把「玩家加入/退出」也发出去（旧版 App 不带这个参数就不发）
      */
     static Batch drain(long since, int max, boolean includeEvents) {
         long next = since;
@@ -421,7 +421,7 @@ public final class ChatHub {
         boolean gap = false;
         synchronized (RING) {
             long now = System.currentTimeMillis();
-            // 顺手清掉过期的（只在有人取的时候清，不额外起定时器）
+            // 同时清理过期的（只在有人取的时候清，不额外起定时器）
             while (!RING.isEmpty() && now - RING.peekFirst().ts > TTL_MS) RING.pollFirst();
             if (RING.isEmpty()) return new Batch(null, since);
 
@@ -439,7 +439,7 @@ public final class ChatHub {
                 next = m.seq;
                 if (!includeEvents && m.kind >= KIND_JOIN) continue;
                 // 6-10 位是可选扩展：来源服务器、结构化附件、队伍名、队伍颜色、世界名。
-                // 老 App 只读前 5 位，多出来的会被忽略
+                // 旧版 App 只读前 5 位，多出来的会被忽略
                 rows.add(new Object[]{m.seq, m.kind, m.name, m.text, m.ts, m.server, m.att, m.team,
                     m.teamColor, m.world});
                 if (rows.size() >= max) break;
@@ -462,7 +462,7 @@ public final class ChatHub {
      * GTNHChat 在广播前把消息连同元数据交过来（反射调用，见 GTNHChat 的 {@code bridge/MobileBridge}）。
      *
      * <p>不经过这里的话，{@link #captureServerChat} 只能看到「已经格式化好的整行」：
-     * 玩家名、来源服务器都揉进文本里，手机端只能一律显示成「服务器」。
+     * 玩家名、来源服务器都混进文本里，手机端只能一律显示成「服务器」。
      *
      * <p>调用方约定：本方法返回后必须紧接着用同一个组件对象调 {@code sendChatMsg}。
      * 这里把它记进 {@link #BRIDGED}，那次广播会被认下来、不再重复入队。
@@ -482,7 +482,7 @@ public final class ChatHub {
     /**
      * 同上，多带一个队伍名（GTNHChat 3.4.0 之后）。
      *
-     * <p>保留 7 参重载是为了老版本 GTNHChat：它反射找的是 7 参签名，
+     * <p>保留 7 参重载是为了旧版本 GTNHChat：它反射找的是 7 参签名，
      * 少了这个重载桥会整个停用。
      */
     public static void acceptFormatted(IChatComponent component, String player, String world,
@@ -494,7 +494,7 @@ public final class ChatHub {
     /**
      * 同上，多带一个队伍颜色（GTNHChat 3.4.1 之后）。
      *
-     * <p>保留 8 参重载是为了老版本 GTNHChat：它反射找的是 8 参签名，
+     * <p>保留 8 参重载是为了旧版本 GTNHChat：它反射找的是 8 参签名，
      * 少了这个重载桥会整个停用。
      *
      * @param teamColor 队伍颜色码字符（{@code d} / {@code b} …），手机端拿它给名字上色
@@ -517,7 +517,7 @@ public final class ChatHub {
         }
 
         // 跨服过来的手机端消息：正文在 raw 里，组件是渲染给游戏内的整行
-        // （`[天空树][AEMobile][名字] 正文`）。直接摊平组件的话，App 气泡会变成
+        // （`[天空树][AEMobile][名字] 正文`）。直接展平组件的话，App 气泡会变成
         // 「名字: [天空树][AEMobile][名字] 正文」—— 前缀重复两遍。
         if (kind == KIND_APP && raw != null && !raw.isEmpty()) {
             BRIDGED.set(component);
@@ -536,17 +536,17 @@ public final class ChatHub {
         String name = ChatFormat.sanitizeName(player, Config.chatMaxName);
         if (name.isEmpty()) name = "服务器";
         // 来源服始终填：本服消息也标上本服显示名。
-        // 3.4.0 时这里写的是 `remote ? origin : ""`（本服不标来源，免得每条都挂前缀），
-        // 但手机端的来源标签现在藏在头像后面、点开才看，那个「免得挂前缀」的理由不成立了，
+        // 3.4.0 时这里写的是 `remote ? origin : ""`（本服不标来源，避免每条都挂前缀），
+        // 但手机端的来源标签现在藏在头像后面、点开才显示，那个「避免挂前缀」的理由不成立了，
         // 而玩家点开却看不到服务器反而更像 bug。
         String server = ChatFormat.sanitizeName(origin, Config.chatMaxName);
         if (server.isEmpty()) server = GtnChatCompat.serverDisplay();
         String teamName = ChatFormat.sanitizeName(team, Config.chatMaxName);
         // 世界显示名：GTNHChat 已经换成了中文别名（`华溪岛` / `家园 #12`）。
-        // App 用它画「世界」标签；拿不到就空串，App 那边整段跳过。
+        // App 用它画「世界」标签；获取不到时为空串，App 那边整段跳过。
         String worldName = ChatFormat.sanitizeName(world, Config.chatMaxName);
-        // 颜色只有一个码字符，不走 sanitizeName —— 那个函数是给名字用的，
-        // 对 1 字符的输入会有意外结果（2026-11-01 排查队伍颜色时踩到）
+        // 颜色只有一个码字符，不走 sanitizeName —— 该函数供名字净化使用，
+        // 对 1 字符的输入结果不可预期（2026-11-01 排查队伍颜色时发现）
         String color = teamColor == null ? "" : teamColor.trim();
         if (color.length() != 1) color = "";
 
@@ -554,12 +554,12 @@ public final class ChatHub {
         AEMobile.debug("[AEMobile] chat kind=" + kind + " name=[" + name + "] team=[" + teamName
             + "] color=[" + color + "]");
 
-        // 玩家聊天：正文只用玩家打的那几个字。
+        // 玩家聊天：正文只用玩家输入的消息文本。
         // `component` 是 GTNHChat 渲染好的整行（`[天空树][华溪岛][华溪岛]Steve: 你好`），
-        // 摊平当正文会变成「Steve: [天空树][华溪岛][华溪岛]Steve: 你好」—— 前缀重复一遍。
+        // 展平当正文会变成「Steve: [天空树][华溪岛][华溪岛]Steve: 你好」—— 前缀重复一遍。
         // 服务器/队伍/名字在 App 里是独立标签，正文不该再带这些。
         if (kind == KIND_GAME && raw != null && !raw.isEmpty()) {
-            // BQ 的任务分享：玩家「打的那几个字」就是 betterquesting.msg.sharequest:<id>，
+            // BQ 的任务分享：玩家的原始输入就是 betterquesting.msg.sharequest:<id>，
             // 原样当正文会在手机上显示成一串乱码。正文留空，App 按附件出「分享了任务」。
             String body = ChatRich.isQuestShare(raw)
                     ? ""
@@ -592,9 +592,9 @@ public final class ChatHub {
      * </ul>
      */
     public static void captureServerChat(IChatComponent component) {
-        // 兜底：本方法被 mixin 挂在 sendChatMsg / S02PacketChat 的发送路径上，
-        // 任何异常冒出去都会把发送方整条打断（玩家被踢、命令回显丢失）。
-        // 抓聊天是附加功能，失败只能丢消息，见 logCaptureFailure。
+        // 异常保护：本方法被 mixin 挂在 sendChatMsg / S02PacketChat 的发送路径上，
+        // 任何异常上抛都会打断发送方整条流程（玩家被强制断开、命令回显丢失）。
+        // 抓聊天是附加功能，失败只能放弃该条消息，见 logCaptureFailure。
         try {
             doCaptureServerChat(component);
         } catch (Throwable t) {
@@ -623,9 +623,9 @@ public final class ChatHub {
                         || "multiplayer.player.left".equals(key)) {
                     return;
                 }
-                // 成就公告：我们自己会发一条 kind 6（中文、居中），原版这条是英文的，
+                // 成就公告：本模组会另发一条 kind 6（中文、居中），原版这条是英文的，
                 // 而且成就名是组件的兄弟节点，扁平化后只剩半句
-                // 「Huaxidesu has just earned the achievement [」—— 又重复又残缺，直接丢。
+                // 「Huaxidesu has just earned the achievement [」—— 又重复又残缺，直接丢弃。
                 if ("chat.type.achievement".equals(key) || "chat.type.achievement.taken".equals(key)) {
                     return;
                 }
@@ -663,7 +663,7 @@ public final class ChatHub {
         // 用 KIND_GAME 而不是 KIND_SERVER：App 那边玩家消息是气泡 + 头像，服务器广播是
         // 喇叭图标 + 灰名，物品卡片挂在玩家气泡里才像「这个人分享了东西」。
         //
-        // 正文留空（ChatRich 把 NEI 那句模板整个丢了）：服务端只发「谁 + 什么物品」，
+        // 正文留空（ChatRich 把 NEI 那句模板整句丢弃）：服务端只发「谁 + 什么物品」，
         // 「分享了物品」这句文案由 App 按附件类型生成 —— 服务端不做翻译。
         String who = neiSharer(component);
         if (!who.isEmpty()) {
@@ -683,8 +683,8 @@ public final class ChatHub {
      *
      * <p>为什么不直接 {@code getUnformattedText()}：{@code ChatComponentTranslation}
      * 的模板解析（vanilla {@code initializeFromFormat}）遇到 {@code %d} 或参数越界会
-     * 直接 throw，而发送路径上的 throw 会把玩家整条连接踢掉
-     * （2026-11-03 NEI 时间按钮踢人）。详见 {@link ChatRich#safeOwnText}。
+     * 直接抛出异常，而发送路径上的异常会把玩家整条连接强制断开
+     * （2026-11-03 NEI 时间按钮断线事件）。详见 {@link ChatRich#safeOwnText}。
      */
     public static String safeOwnPlain(IChatComponent component) {
         return ChatRich.safeOwnText(component, 0);
@@ -694,7 +694,7 @@ public final class ChatHub {
      * 抓聊天链路的统一异常出口：同样的问题只告警一次（60 秒窗口）。
      *
      * <p>这类失败发生在主线程 / 网络发送路径上，每条消息都可能是发给全服的，
-     * 不限频会把日志刷爆；但也不能完全静音，否则修都不知道要修什么。
+     * 不限频会把日志刷满；但也不能完全静音，否则出了问题无从得知。
      */
     public static void logCaptureFailure(String where, Throwable t) {
         if (t == null) return;
@@ -774,11 +774,11 @@ public final class ChatHub {
     }
 
     /**
-     * 调试注入：直接往聊天流里塞一条，**绕过事件源**。
+     * 调试注入：直接往聊天流里写入一条，**绕过事件源**。
      *
      * <p>本机测试服没有真实玩家时，`ServerChatEvent` / `AchievementEvent` / 进出事件都走不到，
-     * 手机端就没法验证。这个入口让 {@code /aemobile debug} 直接造一条消息，
-     * App 侧收到的东西和真玩家发的一模一样（同样的 kind、同样的颜色码处理）。
+     * 手机端就无法验证。这个入口让 {@code /aemobile debug} 直接生成一条消息，
+     * App 侧收到的内容与真实玩家发送的完全一致（同样的 kind、同样的颜色码处理）。
      * 只用于测试，不进任何正式链路。
      */
     public static long inject(int kind, String rawName, String rawText) {
@@ -792,7 +792,7 @@ public final class ChatHub {
     /**
      * 注：颜色码由 {@link ChatRich} 自己按组件树生成，不走 {@code IChatComponent.getFormattedText()}。
      * 那个方法在 reobf 后运行时找不到（{@code NoSuchMethodError: func_150254_d}），
-     * 一调就把整条服务器广播链路打断 —— 这是 2026-10-30 踩过的坑。
+     * 一调用就会打断整条服务器广播链路 —— 这是 2026-10-30 的已知问题。
      */
 
     /** 文本是否带配置里的 AllMusic 前缀（[AllMusic3] / [肥猫电台] ...） */
@@ -833,17 +833,17 @@ public final class ChatHub {
     }
 
     /**
-     * 建立成就基线：把**已经解锁**的成就先塞进 seen，它们再被 addStat 触发时就不会当成新成就。
+     * 建立成就基线：把**已经解锁**的成就先放入 seen，它们再被 addStat 触发时就不会当成新成就。
      *
      * <p>为什么要基线：1.7.10 的 {@code AchievementEvent} 语义是「加了统计」，不是「刚解锁」——
      * 「打开背包」每开一次背包就 addStat 一次。只按时间窗去重的话，玩家隔几秒开一次背包，
-     * 手机端就多一条「完成了成就」（2026-11-01 实测刷屏）。
+     * 手机端就会多一条「完成了成就」（2026-11-01 实测重复出现）。
      */
     private static void primeAchievements(EntityPlayerMP player) {
         Set<String> seen = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
         try {
             // 服务端的统计文件是 StatisticsFile（extends StatFileWriter），
-            // 取法只有 SRG 名 func_147099_x()：这套 MCP 里没给它起名字
+            // 取法只有 SRG 名 func_147099_x()：MCP 未提供它的 MCP 名
             net.minecraft.stats.StatFileWriter stats = player.func_147099_x();
             if (stats != null) {
                 for (Object o : net.minecraft.stats.AchievementList.achievementList) {

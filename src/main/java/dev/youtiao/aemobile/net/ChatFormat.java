@@ -13,9 +13,9 @@ import java.util.regex.Pattern;
  * Minecraft 颜色/格式码的安全解析。
  *
  * <p>支持 {@code §}/{@code &} + {@code 0-9a-f}（颜色）和 {@code l/o/n/m/r}（样式）。
- * {@code k}（乱码/obfuscated）直接丢掉码但保留文字；其余控制字符、换行、双向覆盖符照旧清理。
+ * {@code k}（乱码/obfuscated）直接去除码但保留文字；其余控制字符、换行、双向覆盖符照旧清理。
  *
- * <p>只生成 {@link ChatComponentText} 字面量，不碰 jsonToComponent / clickEvent / hoverEvent。
+ * <p>只生成 {@link ChatComponentText} 字面量，不使用 jsonToComponent / clickEvent / hoverEvent。
  */
 public final class ChatFormat {
 
@@ -54,7 +54,7 @@ public final class ChatFormat {
 
     private static String sanitize(String raw, int max, boolean isName, boolean allowCodes) {
         if (raw == null) return "";
-        // 用 long 算容量：plain() 传的是 Integer.MAX_VALUE，直接 +16 会溢出成负数
+        // 用 long 计算容量：plain() 传的是 Integer.MAX_VALUE，直接 +16 会溢出成负数
         int cap = (int) Math.min((long) raw.length(), (long) max + 16L);
         StringBuilder b = new StringBuilder(Math.max(16, cap));
         int count = 0;
@@ -67,13 +67,13 @@ public final class ChatFormat {
                 char code = Character.toLowerCase((char) codeCp);
                 if (isColorOrStyle(code)) {
                     i += Character.charCount(codeCp);
-                    if (code == 'k') continue; // 乱码码：去掉码，文字留着
+                    if (code == 'k') continue; // 乱码码：去除码，保留文字
                     b.append('\u00a7').append(code);
                     continue;
                 }
                 if (cp == 0xA7) continue; // 孤立的 § 丢弃
             } else if (!allowCodes && (cp == 0xA7 || cp == '&') && i < raw.length()) {
-                // 纯文本：颜色码连同码字一起丢掉
+                // 纯文本：颜色码连同码字一并去除
                 int codeCp = raw.codePointAt(i);
                 char code = Character.toLowerCase((char) codeCp);
                 if (isColorOrStyle(code)) {
@@ -97,7 +97,7 @@ public final class ChatFormat {
         return b.toString().trim();
     }
 
-    /** 去掉所有颜色码，给过滤/去重/日志用（上限给足，别用 MAX_VALUE 去算容量） */
+    /** 去掉所有颜色码，给过滤/去重/日志用（上限给足，不要用 MAX_VALUE 计算容量） */
     static String plain(String raw) {
         return sanitize(raw, 8192, false, false);
     }

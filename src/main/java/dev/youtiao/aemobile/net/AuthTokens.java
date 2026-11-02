@@ -68,7 +68,7 @@ public final class AuthTokens {
     /**
      * 注销一个 token（重置绑定码时用）。
      *
-     * <p>只从 kid 索引和全集里摘掉；已建立的连接需要由 {@code TcpServer.closeByToken}
+     * <p>只从 kid 索引和全集里移除；已建立的连接需要由 {@code TcpServer.closeByToken}
      * 主动断开，否则它们还能继续用旧 token 收推。
      */
     public static void unregister(String token) {
@@ -89,7 +89,7 @@ public final class AuthTokens {
         return token != null && !token.isEmpty() && ALL.contains(token.toUpperCase(Locale.ROOT));
     }
 
-    /** 停服/切世界时清空整张表，避免不同存档的 token 串档 */
+    /** 停止服务器/切换世界时清空整张表，避免不同存档的 token 串档 */
     public static void clear() {
         ALL.clear();
         BY_KID.clear();

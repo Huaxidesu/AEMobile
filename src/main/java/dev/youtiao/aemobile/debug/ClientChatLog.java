@@ -60,8 +60,8 @@ public final class ClientChatLog {
      * 带 {@code §} 颜色码的文本。
      *
      * <p>不用 {@code getFormattedText()}：那个方法在 reobf 后运行时找不到
-     * （{@code NoSuchMethodError: func_150254_d}），一调就把整条链路打断。
-     * 这里用 {@code getUnformattedText()}，颜色交给 JSON 那条命令看。
+     * （{@code NoSuchMethodError: func_150254_d}），一调用就会打断整条链路。
+     * 这里用 {@code getUnformattedText()}，颜色交给 JSON 那条命令查看。
      */
     private static String textOf(IChatComponent c) {
         try {

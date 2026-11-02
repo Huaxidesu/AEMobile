@@ -45,18 +45,18 @@ import java.util.Set;
  * /aemobileicons dump items [尺寸]    物品图标 PNG（默认 128px）
  * /aemobileicons dump fluids          流体颜色表
  * /aemobileicons dump aspects         源质颜色表
- * /aemobileicons dumpicons [list] [尺寸]   老入口 = dump items（list：只导 config/aemobile-dump-items.txt）
- * /aemobileicons dumpcolors           老入口 = dump fluids aspects
+ * /aemobileicons dumpicons [list] [尺寸]   旧入口 = dump items（list：只导 config/aemobile-dump-items.txt）
+ * /aemobileicons dumpcolors           旧入口 = dump fluids aspects
  * </pre>
  *
- * <p>命令名从 {@code /aemobile} 改成 {@code /aemobileicons}：{@code /aemobile} 让给服务端的
- * 玩家命令（例如 {@code /aemobile token reset}）。客户端命令会抢在服务端前面处理，
- * 不换名的话玩家在装了本 mod 的客户端上根本执行不到服务端版本。
+ * <p>命令名从 {@code /aemobile} 改成 {@code /aemobileicons}：{@code /aemobile} 保留给服务端的
+ * 玩家命令（例如 {@code /aemobile token reset}）。客户端命令会先于服务端命令被处理，
+ * 不改名的话玩家在装了本 mod 的客户端上无法执行服务端版本。
  *
  * 产物：<游戏目录>/dumps/aemobile/
  *   items/<modid>/<item>_<meta>.png + manifest.jsonl
  *   fluid-colors.tsv、aspect-colors.tsv
- * 然后跑 tools/build_item_icons.py / build_fluid_icons.py / build_aspects.py 合并进 App 的图标库。
+ * 然后运行 tools/build_item_icons.py / build_fluid_icons.py / build_aspects.py 合并进 App 的图标库。
  */
 public class CommandDumpIcons extends CommandBase {
 
@@ -114,7 +114,7 @@ public class CommandDumpIcons extends CommandBase {
             if (items) startItemDump(false, size);
             return;
         }
-        // 老入口：dumpcolors = 流体颜色 + 源质颜色
+        // 旧入口：dumpcolors = 流体颜色 + 源质颜色
         if ("dumpcolors".equalsIgnoreCase(args[0])) {
             dumpColors(true, true);
             return;

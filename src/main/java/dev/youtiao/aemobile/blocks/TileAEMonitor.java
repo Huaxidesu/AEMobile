@@ -74,7 +74,7 @@ public class TileAEMonitor extends TileEntity {
      * token → 该玩家的所有监控器坐标。
      *
      * <p>必须并发安全：TCP 连接线程会读（getNetworks），主线程会写（放/拆方块、区块加载）。
-     * 之前是普通 HashMap + HashSet，HTTP 时代靠"读得少"侥幸没炸。
+     * 之前是普通 HashMap + HashSet，HTTP 时代读取频率低，该缺陷未暴露。
      */
     public static Map<String, Set<PosTuple>> tilesInTheWorld = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -95,12 +95,12 @@ public class TileAEMonitor extends TileEntity {
      *
      * <p>必须用并发队列：写入方是**每连接一个**的 TCP 读线程（30 个玩家 = 30 个线程同时 add），
      * 读取方是主线程的 {@code updateEntity}。原来用 {@code ArrayDeque}，多玩家并发时会丢任务
-     * 或把队列结构搞坏 —— 丢一个任务就意味着某个 TCP 线程的 {@code ft.get()} 永远等不到结果。
+     * 或破坏队列结构 —— 丢失一个任务就意味着某个 TCP 线程的 {@code ft.get()} 永远等不到结果。
      */
     private final java.util.Queue<FutureTask<?>> tasks = new java.util.concurrent.ConcurrentLinkedQueue<>();
-    /** 每 tick 给这些任务的时间预算（纳秒）；超了就把剩下的留到下个 tick，避免一次把 tick 拖死 */
+    /** 每 tick 给这些任务的时间预算（纳秒）；超出预算时把剩余任务留到下个 tick，避免单次拖慢整个 tick */
     private static final long TICK_BUDGET_NS = 8_000_000L;
-    /** 单个任务超过这个耗时就在日志里点名，方便定位是谁在拖 tick */
+    /** 单个任务超过这个耗时就在日志中记录，便于定位是哪个任务拖慢 tick */
     private static final long SLOW_TASK_MS = 50L;
     String getIcon(ItemStack stack) {
         String name = Item.itemRegistry.getNameForObject(stack.getItem()) + "_" + stack.getItemDamage() +  "_tag_" + TileAEMonitor.writeNBTAsBase64(stack.getTagCompound());
@@ -436,13 +436,13 @@ public class TileAEMonitor extends TileEntity {
         if(uuid == null) return;
         ownerUUID = UUID.fromString(uuid);
         // owner 的当前码优先：玩家执行过 /aemobile token reset 后，没加载的区块里
-        // 的 tile 仍然存着旧码，这里必须覆盖掉，否则旧码会被重新登记、变成「复活」。
+        // 的 tile 仍然存着旧码，这里必须覆盖掉，否则旧码会被重新登记、重新生效。
         String ownerToken = dev.youtiao.aemobile.net.MonitorRegistry.currentToken(ownerUUID);
         String stored = p_145839_1_.hasKey("token") ? p_145839_1_.getString("token") : null;
         if (ownerToken != null && !ownerToken.isEmpty()) {
             token = ownerToken.toUpperCase(java.util.Locale.ROOT);
         } else {
-            // 新存档直接有 token；老存档没有，用 UUID 首段兜底（下次放置方块时会换成随机 token）
+            // 新存档直接有 token；旧存档没有，用 UUID 首段作为后备码（下次放置方块时会换成随机 token）
             token = (stored == null || stored.isEmpty())
                     ? uuid.split("-")[0].toUpperCase(java.util.Locale.ROOT)
                     : stored.toUpperCase(java.util.Locale.ROOT);
@@ -456,7 +456,7 @@ public class TileAEMonitor extends TileEntity {
             return java.util.concurrent.ConcurrentHashMap.newKeySet();
         });
         TileAEMonitor.tilesInTheWorld.get(token).add(posTuple);
-        // 老存档（3.0.0 之前）的监控器没有坐标记录。玩家在线时顺手补进他的持久化 NBT，
+        // 旧存档（3.0.0 之前）的监控器没有坐标记录。玩家在线时一并补写进其持久化 NBT，
         // 下次启动扫 playerdata 就能恢复注册表，不再依赖「区块被加载过」。
         if (ownerUUID != null && worldObj != null && worldObj.playerEntities != null) {
             for (Object o : worldObj.playerEntities) {
@@ -489,8 +489,8 @@ public class TileAEMonitor extends TileEntity {
         if(worldObj == null || worldObj.isRemote) return;
         if(token == null || posTuple == null) return;
         // 区块卸载也会走 invalidate()，不能当成「方块被拆」——
-        // 否则 App 一离开监控器附近，注册表里就没这个监控器了（3.0.0 之前的坑）。
-        // 只有方块真的不在了，才从注册表摘掉。
+        // 否则 App 一离开监控器附近，注册表中就没有该监控器了（3.0.0 之前的已知问题）。
+        // 只有方块确实不存在了，才从注册表移除。
         net.minecraft.block.Block block = worldObj.getBlock(xCoord, yCoord, zCoord);
         if (block instanceof dev.youtiao.aemobile.blocks.BlockAEMonitor) return;
         Set<PosTuple> set = tilesInTheWorld.get(token);
@@ -553,7 +553,7 @@ public class TileAEMonitor extends TileEntity {
     @Override
     public void updateEntity() {
         // 每 tick 只花 TICK_BUDGET_NS 在这些任务上：多人同时开 App 时，队列里可能一次排十几个请求，
-        // 全部跑完会把这一 tick 拖到几百毫秒（玩家看到卡顿/掉 TPS）。剩下的下个 tick 继续。
+        // 全部执行完会把这一 tick 拖长到几百毫秒（玩家看到卡顿/掉 TPS）。剩下的下个 tick 继续。
         long deadline = System.nanoTime() + TICK_BUDGET_NS;
         while (true) {
             FutureTask<?> task = tasks.poll();
@@ -681,9 +681,9 @@ public class TileAEMonitor extends TileEntity {
      *       {@code AEEssentiaStack}，本 mod 不编译依赖 TE，走反射构造。</li>
      * </ul>
      *
-     * <p>这两类条目的 NBT 里还有我们额外塞的 {@code Name} / {@code Color}（只给 App 显示用），
+     * <p>这两类条目的 NBT 里还有额外写入的 {@code Name} / {@code Color}（只给 App 显示用），
      * 建栈时必须按各自格式重建：AE2 用 NBT 实例判等（{@code AEItemDef.equals}），
-     * 多一个键就认不出是网络里那个东西，计划会变成「全部缺失」。
+     * 多一个键就无法匹配到网络中对应的条目，计划会变成「全部缺失」。
      */
     private IAEStack<?> buildTargetStack(String item, int meta, String nbtBase64, long count) {
         NBTTagCompound tag = readNBTFromBase64(nbtBase64);
@@ -774,7 +774,7 @@ public class TileAEMonitor extends TileEntity {
         return tag;
     }
 
-    /** 网络里有没有「输出这条栈」的样板。源质/流体的 craftable 标记不一定被 AE2 维护，用它兜底 */
+    /** 网络里有没有「输出这条栈」的样板。源质/流体的 craftable 标记不一定被 AE2 维护，用它作为后备判定 */
     private boolean hasPatternFor(ICraftingGrid grid, IAEStack<?> stack) {
         if (!(grid instanceof CraftingGridCache)) return false;
         try {
@@ -787,7 +787,7 @@ public class TileAEMonitor extends TileEntity {
     public Response<CraftPlan> populatePlan(CraftingJobV2 iCraftingJob) {
         // 必须用 IAEStackList（物品+流体混合列表），不能用 ItemList（物品专用）：
         // CraftingJobV2.populatePlan 会遍历所有已解析任务，把任务里「从网络提取的输入」
-        // 塞进这个 sink —— 流体配方的任务（ExtractItemResolver 等）会塞 AEFluidStack，
+        // 写入这个 sink —— 流体配方的任务（ExtractItemResolver 等）会写入 AEFluidStack，
         // ItemList.add 的参数类型是 IAEItemStack，调用边界上强转直接 ClassCastException
         // （ItemList.java:32，2026-10-28 堆栈定位）。
         IAEStackList plan = new IAEStackList();
@@ -800,7 +800,7 @@ public class TileAEMonitor extends TileEntity {
             sg = gridProxyable.getProxy().getGrid().getCache(IStorageGrid.class);
             final IMEInventory<IAEItemStack> items = sg.getItemInventory();
             // 流体/源质各有自己的库存：计划里出现它们时要像物品一样算「网络里已有多少」，
-            // 否则 App 会把整份需求都算成缺失（以前流体分支直接写死 numberPresent=0）。
+            // 否则 App 会把整份需求都算成缺失（以前流体分支直接硬编码 numberPresent=0）。
             final MachineSource source = new MachineSource((IActionHost) gridProxyable.getProxy().getMachine());
             final IMEMonitor<IAEFluidStack> fluidInv = sg.getFluidInventory();
             final IMEMonitor essentiaInv = essentiaMonitor(sg);
@@ -871,7 +871,7 @@ public class TileAEMonitor extends TileEntity {
     /**
      * 建合成任务对象。**必须在主线程做**：CraftingJobV2 的构造函数会去读
      * NetworkMonitor 的存储列表（ItemList.resetStatus），而 ItemList 内部的 fastutil 集合
-     * 不是线程安全的 —— 在 TCP 线程碰它会把主线程正在用的列表搞坏（2026-10-28 崩服事故）。
+     * 不是线程安全的 —— 在 TCP 线程访问会破坏主线程正在使用的列表（2026-10-28 崩服事故）。
      */
     public CraftingJobV2 generateCraftingPlan(String item, int meta, String nbt, long count)
             throws ExecutionException, InterruptedException {
@@ -920,7 +920,7 @@ public class TileAEMonitor extends TileEntity {
             try {
                 Map<Pair<String, Pair<NBTTagCompound,Integer>>, CraftTaskItem> items = new HashMap<>();
                 // 选 CPU + 把任务列表拷出来必须在主线程（CPU 内部集合会被 tick 里的合成进度改动）；
-                // 拷出来的三个 ItemList 是我们自己的对象，之后在 TCP 线程遍历没问题。
+                // 拷出的三个 ItemList 是本方法自建的对象，之后在 TCP 线程遍历没有问题。
                 final ItemList pending = new ItemList();
                 final ItemList active = new ItemList();
                 final ItemList storage = new ItemList();
@@ -1155,7 +1155,7 @@ public class TileAEMonitor extends TileEntity {
                     list.add(itemStackResponse);
                 }
                 // 流体按 ae2fc:fluid_drop 的既有约定发（App 的 resolveItem 认这个 name + NBT 里的 Fluid），
-                // 额外带 Name 供 App 在没有容器映射时兜底显示。
+                // 额外带 Name 供 App 在没有容器映射时作后备显示。
                 for (IAEFluidStack fluid : fluidSnapshot) {
                     Fluid f = fluid.getFluid();
                     if (f == null) continue;
@@ -1195,7 +1195,7 @@ public class TileAEMonitor extends TileEntity {
                     } catch (NumberFormatException ex) {
                         continue;
                     }
-                    // 以前写死 false，App 里所有要素都显示「不可合成」；
+                    // 以前硬编码 false，App 里所有要素都显示「不可合成」；
                     // 现在按网络里是否有输出这个要素的样板（TE 的蒸馏样板）来标
                     r.craftable = e.length > 4 && "1".equals(e[4]);
                     r.nbt = writeNBTAsBase64(tag);

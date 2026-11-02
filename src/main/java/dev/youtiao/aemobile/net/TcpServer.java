@@ -50,7 +50,7 @@ public final class TcpServer {
         });
     }
 
-    /** 启动；端口被占用等失败只打日志，不影响服务器本身 */
+    /** 启动；端口被占用等失败仅输出日志，不影响服务器本身 */
     public static synchronized void start(int port) {
         if (instance != null) return;
         try {
@@ -165,7 +165,7 @@ public final class TcpServer {
         connections.remove(conn);
     }
 
-    /** 同一 sid 只允许一条活连接持有：新连接续传时把旧的摘掉 */
+    /** 同一 sid 只允许一条活连接持有：新连接续传时移除旧订阅 */
     void detachSid(String sid, TcpConnection except) {
         for (TcpConnection conn : connections) {
             if (conn != except) conn.detachStream(sid);

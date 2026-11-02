@@ -23,7 +23,7 @@ Now when you are sure dependency is available in maven repository - just add it 
 
 If there is not online dependency available, you may upload it as a jar to jitpack, see [jitpack single file publishing thread](https://gist.github.com/jitpack-io/f928a858aa5da08ad9d9662f982da983). Please ensure, that you have the rights to do so!
 
-There may also be a case where mods depend on another mods - then you'll need to port any dependencies first. (Yay, dependency hell! :D)
+There may also be a case where mods depend on another mods - then you'll need to port any dependencies first. This situation is commonly referred to as dependency hell.
 
 ### 3. Preparing for porting
 Try to build the project and see check what types of errors are you getting. Generally, there should be 2 types of errors you encounter:
@@ -49,8 +49,8 @@ Good approach is to start working with smaller things first, building up your co
        Maybe somebody with greater knowledge/more time/motivation will try to take bite at it.
 9. Fix bugs you've introduced when porting.
     It is uncommon for mods to have lots of workarounds and hidden connections.
-    You'll need to test things and check if they work as intended (gl;hf ;p)
+    You'll need to test things and check if they work as intended
 
 ### 5. Final words
 
-If after reading this, you are not discouraged and still want to port it - good luck porting it! You'll definitively need it.
+If after reading this, you are not discouraged and still want to port it - good luck porting it.

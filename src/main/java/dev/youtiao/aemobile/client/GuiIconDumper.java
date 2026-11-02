@@ -24,11 +24,11 @@ import java.util.List;
 /**
  * 图标导出界面：把物品列表渲染成一格一格的 PNG，写到 dir 里。
  *
- * <p>渲染流程照抄 NEI 的 {@code GuiItemIconDumper}（那是久经考验的做法）：
+ * <p>渲染流程沿用 NEI 的 {@code GuiItemIconDumper}（成熟做法）：
  * 开一个 Framebuffer，用正交投影把一屏物品画进去，再 {@code glGetTexImage} 读回来切成小图。
  * 之所以做成 GuiScreen 而不是后台线程，是因为 1.7.10 的 GL 必须在客户端渲染线程里用。
  *
- * <p>每帧处理一屏（约 100 个物品），几秒钟就能跑完几千个，界面会自己关掉并打印结果。
+ * <p>每帧处理一屏（约 100 个物品），几秒钟就能处理完几千个，界面会自行关闭并打印结果。
  */
 public class GuiIconDumper extends net.minecraft.client.gui.GuiScreen {
 

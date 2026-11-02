@@ -17,30 +17,30 @@
 - 查询 AE 网络里的物品、流体、神秘时代源质
 - 提交合成计划，查看每台 CPU 的进度与剩余任务
 - 导出图标，供 App 的图标库使用
-- 客户端兜底渲染 ServerUtilities 的现代 TAB（见下）
+- 客户端后备渲染 ServerUtilities 的现代 TAB（见下）
 
 ## 客户端：现代 TAB
 
-3.5.0 起，客户端会兜底渲染 ServerUtilities 的现代 TAB：居中面板、页眉页脚、ping 数字。
+3.5.0 起，客户端会以后备方式渲染 ServerUtilities 的现代 TAB：居中面板、页眉页脚、ping 数字。
 文案由服务器侧 [AEMobileBridge](https://github.com/Huaxidesu/AEMobileBridge) 通过 `SU|TabHF` 信道下发，
 客户端不需要改任何配置。
 
 工作原理：监听 `RenderGameOverlayEvent.Pre(PLAYER_LIST)`，**只有该事件被其它模组取消**（即 SU 的
-mixin 分支被挡掉）时，才反射调用 `serverutils.client.tab.ModernTabRenderer.render()`，
-画完再把事件重新取消，避免和原版重复绘制。SU 正常接管时本模组什么也不做。
+mixin 分支被跳过）时，才反射调用 `serverutils.client.tab.ModernTabRenderer.render()`，
+绘制完成再把事件重新取消，避免和原版重复绘制。SU 正常接管时本模组不做任何处理。
 
 - 依赖 GTNH 整合包自带的 ServerUtilities；找不到该渲染器时静默跳过。
 - 3.5.1 起，服务端还会把本服 `serverutilities.cfg` 的 `tab.headerText` / `tab.footerText`
-  通过 `AEMobileBridge` 的 `tab_source` 上报给代理 —— 代理不用再抄一份文案，改 SU 配置即可，
-  下一次有玩家登录时自动生效。没装 ServerUtilities 或没开 `[bridge]` 时该功能静默跳过。
-- 3.5.2 起上报会带上本服 `server.properties` 的 `server-port`，代理据此自动认出这是哪个子服
+  通过 `AEMobileBridge` 的 `tab_source` 上报给代理 —— 代理无需再复制一份文案，改 SU 配置即可，
+  下一次有玩家登录时自动生效。未安装 ServerUtilities 或未启用 `[bridge]` 时该功能静默跳过。
+- 3.5.2 起上报会带上本服 `server.properties` 的 `server-port`，代理据此自动识别出这是哪个子服
   （如 25588 → `mgl`）；**`[bridge] server-name` 保持默认空即可**，只有代理连本服的端口和
-  `server.properties` 不一致时才需要手填。
+  `server.properties` 不一致时才需要手动填写。
 - 已知冲突：`BetterPingDisplay` 会取消该事件并整份重画原版 TAB，和 SU 的 `showPingNumber`
   功能重复，装了它页眉页脚就不显示，建议移除。
-- `NecroTempus` 的 PlayerTab 模块也会接管 TAB：它先取消 `PLAYER_LIST` 事件再自己画一份，
-  而本模组为了让 SU 的渲染器跑起来会撤销这次取消，结果两份 TAB 叠在一起。
-  **3.6.1 起只要装了 SU，就会在启动时自动把 NecroTempus 的 `PlayerTab` 关掉**
+- `NecroTempus` 的 PlayerTab 模块也会接管 TAB：它先取消 `PLAYER_LIST` 事件再自行绘制一份，
+  而本模组为使 SU 的渲染器正常运行会撤销这次取消，结果两份 TAB 叠在一起。
+  **3.6.1 起只要装了 SU，就会在启动时自动把 NecroTempus 的 `PlayerTab` 停用**
   （日志：`检测到 NecroTempus 的 PlayerTab 已开启…`）；也可手动在
   `config/NecroTempusConfig.cfg` 里设 `"PlayerTab"` 的 `B:PlayerTab=false`。
 

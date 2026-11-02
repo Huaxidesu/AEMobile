@@ -16,7 +16,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 把聊天组件树摊平成「带 {@code §} 颜色码的文本 + 结构化附件」。
+ * 把聊天组件树展平成「带 {@code §} 颜色码的文本 + 结构化附件」。
  *
  * <p>手机端拿到的只能是字符串，而 GTNHChat 和 NEI 把两类重要信息藏在组件里：
  * <ul>
@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
  *       {@code betterquesting.msg.sharequest:<ID>} 混在正文里，原样送到手机上是一串乱码。</li>
  * </ul>
  *
- * <p>这两类都从正文里摘出来，改走 {@code att} 字段的结构化附件，App 才能画成卡片。
+ * <p>这两类都从正文中提取出来，改走 {@code att} 字段的结构化附件，App 才能画成卡片。
  *
  * <p>只读组件，不改原对象；不解析 JSON，也不执行任何点击动作 —— 点击值只用来识别类型。
  */
@@ -54,7 +54,7 @@ final class ChatRich {
         return raw.trim().startsWith(QUEST_MARKER);
     }
 
-    /** 一条消息最多带几个附件，防止有人刷一屏物品把帧撑大 */
+    /** 一条消息最多带几个附件，防止有人刷一屏物品使帧体积过大 */
     private static final int MAX_ATT = 8;
 
     private ChatRich() {}
@@ -75,7 +75,7 @@ final class ChatRich {
     }
 
     static final class Result {
-        /** 带 {@code §} 码的正文；物品链接的文本已被摘掉 */
+        /** 带 {@code §} 码的正文；物品链接的文本已被移除 */
         final String text;
         /** JSON 数组字符串；没有附件时是空串 */
         final String att;
@@ -182,10 +182,10 @@ final class ChatRich {
      *
      * <p>vanilla 的 {@code ChatComponentTranslation} 只认 {@code %s}、{@code %N$s}、{@code %%}，
      * 遇到 {@code %d}（NEI 的时间回显、AE2 的坐标提示）或「模板占位符比参数多」会在
-     * 解析时直接 throw —— 而这类消息的解析发生在网络发送路径上
+     * 解析时直接抛出异常 —— 而这类消息的解析发生在网络发送路径上
      * （{@code getUnformattedText()} / {@code getUnformattedTextForChat()} 都会触发），
-     * 异常一冒泡整条连接就被踢（2026-11-03 NEI 时间按钮踢人）。
-     * 所以翻译节点一律走 {@link #expandTemplate} 自实现展开，不碰 vanilla 的解析器。
+     * 异常一旦上抛整条连接就被强制断开（2026-11-03 NEI 时间按钮断线事件）。
+     * 所以翻译节点一律走 {@link #expandTemplate} 自实现展开，不使用 vanilla 的解析器。
      */
     static String safeOwnText(IChatComponent node, int depth) {
         if (node == null || depth > 8) return "";
@@ -208,7 +208,7 @@ final class ChatRich {
     }
 
     /**
-     * 组件树摊平成纯文本（等价 {@code getUnformattedText()}），translation 走自实现展开，
+     * 组件树展平成纯文本（等价 {@code getUnformattedText()}），translation 走自实现展开，
      * **绝不抛异常**。给 translation 的参数、hover 内容这类「嵌套组件」用。
      */
     static String safeUnformatted(IChatComponent node, int depth) {
@@ -228,8 +228,8 @@ final class ChatRich {
 
     /**
      * vanilla {@code initializeFromFormat} 的宽容版：{@code %s} 顺序替换、{@code %N$s} 按位、
-     * {@code %%} 字面；其它说明符（{@code %d}、{@code %S}…）vanilla 会 throw，这里按下一个
-     * 参数替换；参数越界给空串。只保证不炸、数字能显示，不追求和 String.format 一致
+     * {@code %%} 字面；其它说明符（{@code %d}、{@code %S}…）vanilla 会抛出异常，这里按下一个
+     * 参数替换；参数越界给空串。只保证不崩溃、数字能显示，不追求和 String.format 一致
      * （出现这类说明符说明翻译键本身就是坏的）。
      */
     private static String expandTemplate(ChatComponentTranslation tr, Object[] args, int depth) {
@@ -287,7 +287,7 @@ final class ChatRich {
                 continue;
             }
             if ((c1 >= 'A' && c1 <= 'Z') || (c1 >= 'a' && c1 <= 'z')) {
-                // %d 这类：vanilla 在这里 throw，我们宽容地按下一个参数替换
+                // %d 这类：vanilla 在此处抛出异常，这里宽容地按下一个参数替换
                 out.append(argText(args, next++, depth));
                 i += 2;
                 continue;
@@ -307,13 +307,13 @@ final class ChatRich {
     }
 
     /**
-     * translation 节点的文本，顺带从参数里摘附件。
+     * translation 节点的文本，同时从参数里提取附件。
      *
      * <p>NEI 广播的是 {@code ChatComponentTranslation("nei.chat.item_link.text", 玩家, 物品)}，
      * 物品那一段带着 {@code /nei_bookmark} 的点击动作，而 {@code getUnformattedTextForChat()}
      * 会把参数转成纯文本 —— 点击就没了。
      *
-     * <p>命中物品时**整句直接丢掉**，连翻译都不做：那是 NEI 自己的模板
+     * <p>命中物品时**整句直接丢弃**，连翻译都不做：那是 NEI 自己的模板
      * （{@code "Steve Click to add bookmark: [xxx]"}），服务端不翻译也不转述，
      * 手机端按附件类型出本地文案（{@code attHint}）。
      */
@@ -369,8 +369,8 @@ final class ChatRich {
      * 去掉 {@code §} 颜色码。
      *
      * <p>NEI 分享用的是 {@code ItemStack.getChatComponent()}，里面是**带颜色码的显示名**，
-     * 而 {@code getUnformattedText()} 只摊平组件树、不剥码。颜色码留在附件里，手机端会原样
-     * 打出来（{@code §l§d奥术裂隙}），也查不到本地字典（字典的键是剥过码的纯文本）。
+     * 而 {@code getUnformattedText()} 只展平组件树、不剔除色码。颜色码留在附件里，手机端会原样
+     * 显示（{@code §l§d奥术裂隙}），也查不到本地字典（字典的键是剔除过色码的纯文本）。
      */
     private static String stripCodes(String s) {
         if (s == null || s.isEmpty()) return s;
@@ -405,7 +405,7 @@ final class ChatRich {
     /**
      * 把样式差异写成 {@code §} 码。
      *
-     * <p>样式只能加不能减：要关掉粗体只能 {@code §r} 重置后重新铺一遍当前样式，
+     * <p>样式只能加不能减：要关闭粗体只能 {@code §r} 重置后重新铺一遍当前样式，
      * 这也是游戏里 {@code getFormattedText} 的做法。
      */
     private static void apply(Ctx ctx, Style style) {

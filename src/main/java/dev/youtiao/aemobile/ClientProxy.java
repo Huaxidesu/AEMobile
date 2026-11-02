@@ -24,7 +24,7 @@ public class ClientProxy extends CommonProxy {
         // 客户端收到的聊天记录：给调试通道的 chatlog / chatjson 用（Forge 总线）
         net.minecraftforge.common.MinecraftForge.EVENT_BUS
                 .register(new dev.youtiao.aemobile.debug.ClientChatLog());
-        // 现代 TAB 兜底：SU 的 mixin 分支没跑到时，由我们叫醒 ModernTabRenderer
+        // 现代 TAB 后备逻辑：SU 的 mixin 分支未执行时，由此处唤醒 ModernTabRenderer
         dev.youtiao.aemobile.client.TabOverlayHook.init();
     }
 

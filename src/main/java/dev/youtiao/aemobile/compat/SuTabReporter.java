@@ -13,7 +13,7 @@ import dev.youtiao.aemobile.net.ProxyBridge;
  * {@code tab.headerText/footerText}，但代理是独立进程，读不到这份配置；SU 也没有给代理
  * 留「读配置」的接口，只留了 {@code SU|TabHF}「写覆盖值」的信道。所以在服务端这边读出来、
  * 通过 AEMobileBridge 的 {@code tab_source} 上报，代理再按子服缓存下发 —— 文案的唯一来源
- * 就回到了 SU 配置本身，插件里不用再抄一份。
+ * 就回到了 SU 配置本身，插件里不必再复制一份。
  *
  * <p>反射读取是为了不引入对 ServerUtilities 的硬依赖：没装 SU 时整个类直接跳过。
  * 字段路径已对 2.4.22 反编译确认：{@code ServerUtilitiesConfig.tab.headerText/footerText}
@@ -39,7 +39,7 @@ public final class SuTabReporter {
         }
     }
 
-    /** 后台线程上报，别在主线程里等 socket。 */
+    /** 后台线程上报，不要在主线程里等待 socket。 */
     public static void reportAsync() {
         Thread t = new Thread(new Runnable() {
             @Override

@@ -67,7 +67,7 @@ public final class Protocol {
     public static final int FLAG_GZIP = 0x01;
 
     /**
-     * 单帧上限，防止恶意/错乱数据把堆撑爆。
+     * 单帧上限，防止恶意/错乱数据超出堆内存上限。
      * 2026-10-28 实测：真实基地的 items 全量帧有 13,316 条 / 2.97MB（craftableOnly=false），
      * 原来的 4MiB 太贴边，调到 16MiB。
      */
