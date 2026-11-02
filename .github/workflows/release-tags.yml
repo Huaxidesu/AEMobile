@@ -12,6 +12,8 @@ on:
   push:
     tags:
       - '*'
+  # 手动补发用：在 Actions 页面选 tag 作为 ref 跑一次
+  workflow_dispatch:
 
 permissions:
   contents: write
