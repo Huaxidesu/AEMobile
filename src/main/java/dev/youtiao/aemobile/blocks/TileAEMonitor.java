@@ -69,7 +69,7 @@ import java.util.stream.Collectors;
 
 public class TileAEMonitor extends TileEntity {
 
-    private static final GameProfile FAKEUUID = new GameProfile( UUID.randomUUID(), "NIGGER");
+    private static final GameProfile FAKE_PROFILE = new GameProfile( UUID.randomUUID(), "AEMonitor");
     /**
      * token → 该玩家的所有监控器坐标。
      *
@@ -1054,7 +1054,7 @@ public class TileAEMonitor extends TileEntity {
                 }
                 ICraftingJob iCraftingJob = jobFuture.get();
                 final CraftingCPUCluster finalSelected = selected;
-                FakePlayerGetCraftFailure errorRetriever = new FakePlayerGetCraftFailure((WorldServer) worldObj, FAKEUUID);
+                FakePlayerGetCraftFailure errorRetriever = new FakePlayerGetCraftFailure((WorldServer) worldObj, FAKE_PROFILE);
                 FutureTask<Response> r = new FutureTask<>(() -> {
                     ICraftingLink g = finalCg.submitJob(
                             iCraftingJob,
