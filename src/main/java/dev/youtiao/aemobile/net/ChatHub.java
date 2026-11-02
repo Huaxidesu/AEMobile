@@ -592,6 +592,17 @@ public final class ChatHub {
      * </ul>
      */
     public static void captureServerChat(IChatComponent component) {
+        // 兜底：本方法被 mixin 挂在 sendChatMsg / S02PacketChat 的发送路径上，
+        // 任何异常冒出去都会把发送方整条打断（玩家被踢、命令回显丢失）。
+        // 抓聊天是附加功能，失败只能丢消息，见 logCaptureFailure。
+        try {
+            doCaptureServerChat(component);
+        } catch (Throwable t) {
+            logCaptureFailure("captureServerChat", t);
+        }
+    }
+
+    private static void doCaptureServerChat(IChatComponent component) {
         if (!Config.chatEnabled || !hasSubscribers() || component == null) return;
 
         IChatComponent bridged = BRIDGED.get();
@@ -666,6 +677,39 @@ public final class ChatHub {
         }
         append(KIND_SERVER, "服务器", text, "", rich.att);
     }
+
+    /**
+     * 组件 → 本节点自身文本，给 mixin 在网络发送路径上用。
+     *
+     * <p>为什么不直接 {@code getUnformattedText()}：{@code ChatComponentTranslation}
+     * 的模板解析（vanilla {@code initializeFromFormat}）遇到 {@code %d} 或参数越界会
+     * 直接 throw，而发送路径上的 throw 会把玩家整条连接踢掉
+     * （2026-11-03 NEI 时间按钮踢人）。详见 {@link ChatRich#safeOwnText}。
+     */
+    public static String safeOwnPlain(IChatComponent component) {
+        return ChatRich.safeOwnText(component, 0);
+    }
+
+    /**
+     * 抓聊天链路的统一异常出口：同样的问题只告警一次（60 秒窗口）。
+     *
+     * <p>这类失败发生在主线程 / 网络发送路径上，每条消息都可能是发给全服的，
+     * 不限频会把日志刷爆；但也不能完全静音，否则修都不知道要修什么。
+     */
+    public static void logCaptureFailure(String where, Throwable t) {
+        if (t == null) return;
+        long now = System.currentTimeMillis();
+        String key = where + ": " + t;
+        synchronized (ChatHub.class) {
+            if (key.equals(lastCaptureFail) && now - lastCaptureFailAt < 60000L) return;
+            lastCaptureFail = key;
+            lastCaptureFailAt = now;
+        }
+        AEMobile.warn("[AEMobile] 聊天抓取已跳过（" + where + "，消息照常发送）：" + t);
+    }
+
+    private static String lastCaptureFail = "";
+    private static long lastCaptureFailAt = 0L;
 
     /**
      * 按名字反查在线玩家，交给 {@link GtnChatCompat#teamOf}。

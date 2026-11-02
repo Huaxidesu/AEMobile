@@ -6,6 +6,7 @@ import net.minecraft.util.ChatComponentTranslation;
 import net.minecraft.util.ChatStyle;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
+import net.minecraft.util.StatCollector;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -140,12 +141,12 @@ final class ChatRich {
         Style style = of(node);
 
         // 只取本节点自身的文本：getUnformattedText() 会把 siblings 一起拼进来，
-        // 递归时就会每段重复一遍。getUnformattedTextForChat() 不含 siblings。
+        // 递归时就会每段重复一遍。safeOwnText() 同样不含 siblings，但不碰 vanilla 的解析器。
         String own;
         if (node instanceof ChatComponentTranslation) {
             own = translationText((ChatComponentTranslation) node, ctx);
         } else {
-            own = node.getUnformattedTextForChat();
+            own = safeOwnText(node, 0);
         }
 
         if (own != null && !own.isEmpty()) {
@@ -174,6 +175,137 @@ final class ChatRich {
         }
     }
 
+    // -------------------------------------------------------------- 安全取文本
+
+    /**
+     * 本节点的自身文本，**绝不抛异常**。
+     *
+     * <p>vanilla 的 {@code ChatComponentTranslation} 只认 {@code %s}、{@code %N$s}、{@code %%}，
+     * 遇到 {@code %d}（NEI 的时间回显、AE2 的坐标提示）或「模板占位符比参数多」会在
+     * 解析时直接 throw —— 而这类消息的解析发生在网络发送路径上
+     * （{@code getUnformattedText()} / {@code getUnformattedTextForChat()} 都会触发），
+     * 异常一冒泡整条连接就被踢（2026-11-03 NEI 时间按钮踢人）。
+     * 所以翻译节点一律走 {@link #expandTemplate} 自实现展开，不碰 vanilla 的解析器。
+     */
+    static String safeOwnText(IChatComponent node, int depth) {
+        if (node == null || depth > 8) return "";
+        if (node instanceof ChatComponentTranslation) {
+            ChatComponentTranslation tr = (ChatComponentTranslation) node;
+            Object[] args;
+            try {
+                args = tr.getFormatArgs();
+            } catch (Throwable t) {
+                args = null;
+            }
+            return expandTemplate(tr, args, depth + 1);
+        }
+        try {
+            String own = node.getUnformattedTextForChat();
+            return own == null ? "" : own;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * 组件树摊平成纯文本（等价 {@code getUnformattedText()}），translation 走自实现展开，
+     * **绝不抛异常**。给 translation 的参数、hover 内容这类「嵌套组件」用。
+     */
+    static String safeUnformatted(IChatComponent node, int depth) {
+        StringBuilder sb = new StringBuilder(64);
+        collect(node, sb, depth);
+        return sb.toString();
+    }
+
+    private static void collect(IChatComponent node, StringBuilder sb, int depth) {
+        if (node == null) return;
+        sb.append(safeOwnText(node, depth));
+        List<IChatComponent> siblings = node.getSiblings();
+        if (siblings != null) {
+            for (IChatComponent s : siblings) collect(s, sb, depth);
+        }
+    }
+
+    /**
+     * vanilla {@code initializeFromFormat} 的宽容版：{@code %s} 顺序替换、{@code %N$s} 按位、
+     * {@code %%} 字面；其它说明符（{@code %d}、{@code %S}…）vanilla 会 throw，这里按下一个
+     * 参数替换；参数越界给空串。只保证不炸、数字能显示，不追求和 String.format 一致
+     * （出现这类说明符说明翻译键本身就是坏的）。
+     */
+    private static String expandTemplate(ChatComponentTranslation tr, Object[] args, int depth) {
+        String key = "";
+        try {
+            key = tr.getKey();
+        } catch (Throwable t) { }
+        if (key == null) key = "";
+        String template;
+        try {
+            template = StatCollector.translateToLocal(key);
+        } catch (Throwable t) {
+            template = key;
+        }
+        if (template == null || template.isEmpty()) template = key;
+        if (args == null || args.length == 0 || template.indexOf('%') < 0) return template;
+
+        StringBuilder out = new StringBuilder(template.length() + 32);
+        int next = 0;
+        int i = 0;
+        int len = template.length();
+        while (i < len) {
+            char ch = template.charAt(i);
+            if (ch != '%') {
+                out.append(ch);
+                i++;
+                continue;
+            }
+            if (i + 1 >= len) {
+                out.append('%');
+                break;
+            }
+            char c1 = template.charAt(i + 1);
+            if (c1 == '%') {
+                out.append('%');
+                i += 2;
+                continue;
+            }
+            if (c1 == 's') {
+                out.append(argText(args, next++, depth));
+                i += 2;
+                continue;
+            }
+            int k = i + 1;
+            while (k < len && template.charAt(k) >= '0' && template.charAt(k) <= '9') k++;
+            if (k > i + 1 && k + 1 < len && template.charAt(k) == '$' && template.charAt(k + 1) == 's') {
+                int idx;
+                try {
+                    idx = Integer.parseInt(template.substring(i + 1, k)) - 1;
+                } catch (NumberFormatException e) {
+                    idx = -1;
+                }
+                out.append(argText(args, idx, depth));
+                i = k + 2;
+                continue;
+            }
+            if ((c1 >= 'A' && c1 <= 'Z') || (c1 >= 'a' && c1 <= 'z')) {
+                // %d 这类：vanilla 在这里 throw，我们宽容地按下一个参数替换
+                out.append(argText(args, next++, depth));
+                i += 2;
+                continue;
+            }
+            // % 后跟 . + ( 之类（%+.2f）：vanilla 同样不支持，原样保留，不消耗参数
+            out.append(ch);
+            i++;
+        }
+        return out.toString();
+    }
+
+    private static String argText(Object[] args, int idx, int depth) {
+        if (idx < 0 || idx >= args.length || args[idx] == null) return "";
+        Object a = args[idx];
+        if (a instanceof IChatComponent) return safeUnformatted((IChatComponent) a, depth);
+        return String.valueOf(a);
+    }
+
     /**
      * translation 节点的文本，顺带从参数里摘附件。
      *
@@ -192,31 +324,30 @@ final class ChatRich {
         } catch (Throwable t) {
             args = null;
         }
-        if (args == null || args.length == 0) {
-            return tr.getUnformattedTextForChat();
-        }
-
         boolean nei = false;
-        for (Object arg : args) {
-            if (!(arg instanceof IChatComponent)) continue;
-            IChatComponent c = (IChatComponent) arg;
-            Style cs = of(c);
-            String text = c.getUnformattedText();
-            if (text == null || text.isEmpty()) continue;
+        if (args != null) {
+            for (Object arg : args) {
+                if (!(arg instanceof IChatComponent)) continue;
+                IChatComponent c = (IChatComponent) arg;
+                Style cs = of(c);
+                String text = safeUnformatted(c, 1);
+                if (text == null || text.isEmpty()) continue;
 
-            if (isNeiItem(cs)) {
-                addAtt(ctx, new Att("item", stripCodes(stripBrackets(text)), hoverText(cs.hover), null));
-                nei = true;
-                continue;
-            }
-            if (text.contains(QUEST_MARKER)) {
-                Matcher m = QUEST_ID.matcher(text);
-                if (m.find()) addAtt(ctx, new Att("quest", "", "", m.group(1)));
+                if (isNeiItem(cs)) {
+                    addAtt(ctx, new Att("item", stripCodes(stripBrackets(text)), hoverText(cs.hover), null));
+                    nei = true;
+                    continue;
+                }
+                if (text.contains(QUEST_MARKER)) {
+                    Matcher m = QUEST_ID.matcher(text);
+                    if (m.find()) addAtt(ctx, new Att("quest", "", "", m.group(1)));
+                }
             }
         }
-        // 物品消息整句不要：省一次 StatCollector 翻译，正文由 App 出
+        // 物品消息整句不要：省一次翻译，正文由 App 出
         if (nei) return "";
-        return tr.getUnformattedTextForChat();
+        // 不调 getUnformattedTextForChat()：那会触发 vanilla 的模板解析，%d 直接 throw
+        return expandTemplate(tr, args, 1);
     }
 
     private static boolean isNeiItem(Style style) {
@@ -257,7 +388,8 @@ final class ChatRich {
 
     private static String hoverText(HoverEvent hover) {
         if (hover == null || hover.getValue() == null) return "";
-        String s = hover.getValue().getUnformattedText();
+        // hover 值也可能是 translation 组件，同样不能触发 vanilla 解析器
+        String s = safeUnformatted(hover.getValue(), 0);
         return s == null ? "" : stripCodes(s);
     }
 

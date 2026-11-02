@@ -1,5 +1,6 @@
 package dev.youtiao.aemobile.mixins;
 
+import dev.youtiao.aemobile.Config;
 import dev.youtiao.aemobile.net.ChatHub;
 import net.minecraft.network.NetHandlerPlayServer;
 import net.minecraft.network.Packet;
@@ -25,6 +26,12 @@ import java.lang.reflect.Method;
  * 但在 Thermos 上运行时报 {@code NoSuchMethodError}，而且是在玩家登录、
  * 服务端发欢迎消息时触发 —— 整条连接被踢掉（{@code A fatal error has occured}）。
  * 方法名和字段名在不同端上不一样，所以两种都试一遍。
+ *
+ * <p><b>本方法体在任何输入下都不允许抛异常</b>：注入点在聊天包的发送路径上，
+ * 异常冒出去就是整条连接被踢（2026-11-03 NEI 的时间回显 {@code nei.chat.time}
+ * 带 {@code %d}，vanilla 的模板解析器对它直接 throw，当时把点按钮的玩家踢下了线）。
+ * 取文本一律走 {@link ChatHub#safeOwnPlain}，整个方法体再有 {@code catch (Throwable)} 兜底；
+ * 失败只丢抓取，不 cancel，原包照发。
  */
 @Mixin(NetHandlerPlayServer.class)
 public class MixinNetHandlerPlayServer {
@@ -37,17 +44,22 @@ public class MixinNetHandlerPlayServer {
     @Inject(method = "func_147359_a", at = @At("HEAD"))
     private void aemobile$captureMusicChat(Packet packet, CallbackInfo ci) {
         if (!(packet instanceof S02PacketChat)) return;
+        if (!Config.chatEnabled) return;
         IChatComponent component = componentOf((S02PacketChat) packet);
         if (component == null) return;
-        if (isNeiLink(component)) {
-            // NEI 的物品链接也是逐个玩家发的（`ServerUtils.sendChatToAll`），同样不走
-            // `sendChatMsg`；不在这里捞，手机端永远看不到别人分享的物品。
-            ChatHub.captureServerChat(component);
-            return;
-        }
-        String plain = component.getUnformattedText();
-        if (plain != null && ChatHub.isMusicText(plain) && ChatHub.isMusicPublicText(plain)) {
-            ChatHub.captureServerChat(component);
+        try {
+            if (isNeiLink(component)) {
+                // NEI 的物品链接也是逐个玩家发的（`ServerUtils.sendChatToAll`），同样不走
+                // `sendChatMsg`；不在这里捞，手机端永远看不到别人分享的物品。
+                ChatHub.captureServerChat(component);
+                return;
+            }
+            String plain = ChatHub.safeOwnPlain(component);
+            if (plain != null && ChatHub.isMusicText(plain) && ChatHub.isMusicPublicText(plain)) {
+                ChatHub.captureServerChat(component);
+            }
+        } catch (Throwable t) {
+            ChatHub.logCaptureFailure("sendPacket", t);
         }
     }
 

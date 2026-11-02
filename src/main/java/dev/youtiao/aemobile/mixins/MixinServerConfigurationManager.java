@@ -14,12 +14,20 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p>只挂在 {@code sendChatMsg(IChatComponent)} 的 HEAD，不改变原方法行为。
  * 玩家聊天 / 进出的二次广播、App 自己的广播、可执行命令回显都在
  * {@link ChatHub#captureServerChat} 里过滤。
+ *
+ * <p><b>方法体不允许抛异常</b>：sendChatMsg 是广播的发送路径，抓聊天里的任何异常
+ * 冒出去都会打断广播本身（命令回显整条丢失）。取文本的安全约束见
+ * {@link ChatHub#safeOwnPlain}；这里再兜一层 {@code catch (Throwable)}。
  */
 @Mixin(ServerConfigurationManager.class)
 public class MixinServerConfigurationManager {
 
     @Inject(method = "sendChatMsg", at = @At("HEAD"))
     private void aemobile$captureServerChat(IChatComponent component, CallbackInfo ci) {
-        ChatHub.captureServerChat(component);
+        try {
+            ChatHub.captureServerChat(component);
+        } catch (Throwable t) {
+            ChatHub.logCaptureFailure("sendChatMsg", t);
+        }
     }
 }
