@@ -1,62 +1,23 @@
 # 打 tag 就构建并发布到 GitHub Release。
 #
-# 版本号由 build.gradle 的 git-version 插件从 tag 读，所以 fetch-depth 必须是 0
-# （浅克隆拿不到 tag，构建会直接抛 "This mod must be version controlled by Git"）。
+# 构建环境交给 GTNH 官方的可复用 workflow：ForgeGradle 1.2 在 GitHub Actions 上有一堆环境坑
+# （最典型的是 `:applyBinPatches` 报 CrashReport 的 checksum 不匹配），自己拼 steps 反复踩不划算，
+# 官方那份每天在跑，JDK/toolchain/缓存都配好了。GTNH 官方示例模组也是这么写的。
 #
-# 原模板用的 marvinpinto/action-automatic-releases 早已归档，换成 softprops/action-gh-release；
-# 模板里的 ./gradlew publish（发 GitHub Packages）去掉了 —— 对 1.7.10 整合包没意义。
-# setupCIWorkspace 保留：ForgeGradle 1.2 靠它准备 binpatch 环境，跳过会在 :applyBinPatches 炸。
+# 版本号由 build.gradle 的 git-version 插件从 tag 读，所以必须由 tag 触发。
 name: Release
 
 on:
   push:
     tags:
       - '*'
-  # 手动补发用：在 Actions 页面选 tag 作为 ref 跑一次
+  # 手动补发用：Actions 页面选 tag 作为 ref 跑一次
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up JDK 8
-        uses: actions/setup-java@v4
-        with:
-          java-version: '8'
-          distribution: 'temurin'
-          cache: gradle
-
-      - name: Grant execute permission for gradlew
-        # gradlew 只是转发到 gradlew.in 的包装脚本（仓库里没有前端子模块了），两个都要 +x
-        run: chmod +x gradlew gradlew.in
-
-      # 必须先跑这个：ForgeGradle 1.2 要它下载并准备 minecraft/forge 的 binpatch 环境，
-      # 直接 build 会在 :applyBinPatches 报 CrashReport 的 checksum 不匹配。
-      - name: Setup workspace
-        run: ./gradlew setupCIWorkspace --no-daemon
-
-      - name: Build
-        run: ./gradlew build -x test --no-daemon
-
-      - name: Collect jars
-        run: |
-          mkdir -p dist
-          cp build/libs/*.jar dist/
-          ls -lh dist
-
-      # 只在 tag 上发 Release：手动触发（workflow_dispatch）只用来验证能不能编出来
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.jar
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+  release-tags:
+    uses: GTNewHorizons/GTNH-Actions-Workflows/.github/workflows/release-tags.yml@master
+    secrets: inherit
