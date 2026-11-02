@@ -16,6 +16,8 @@ public class Config {
         public static final int chatMinIntervalMs = 2000;
         public static final int chatPerMinute = 30;
         public static final int chatBroadcastPerTick = 5;
+        public static final boolean chatGuest = false;
+        public static final int chatGuestMax = 8;
         public static final boolean chatJoinLeave = true;
         public static final boolean chatAchievements = true;
         public static final boolean musicEnabled = true;
@@ -61,6 +63,14 @@ public class Config {
     public static int chatPerMinute = Defaults.chatPerMinute;
     /** 每 tick 最多往游戏里广播几条（防刷屏拖 tick） */
     public static int chatBroadcastPerTick = Defaults.chatBroadcastPerTick;
+    /**
+     * 游客只读聊天：允许**不填绑定码**的连接订阅 chat 流（只能看，不能发言、不能调任何 REQ）。
+     * 默认关 —— 开了等于把公屏聊天公开给任何知道端口的人。
+     */
+    public static boolean chatGuest = Defaults.chatGuest;
+    /** 同时最多允许几条游客连接（总连接上限只有 32，游客不能把正式用户挤掉） */
+    public static int chatGuestMax = Defaults.chatGuestMax;
+
     /** 是否把玩家加入/退出也推给 App（只进手机，不广播游戏公屏） */
     public static boolean chatJoinLeave = Defaults.chatJoinLeave;
     /** 是否把玩家完成成就推给 App */
@@ -101,6 +111,13 @@ public class Config {
                 "Max messages per minute from the same token.");
         chatBroadcastPerTick = configuration.getInt("broadcastPerTick", Categories.chat, Defaults.chatBroadcastPerTick, 1, 50,
                 "Max messages broadcast into the game per server tick.");
+        chatGuest = configuration.getBoolean("guest", Categories.chat, Defaults.chatGuest,
+                "Allow read-only guest connections WITHOUT a token: they can subscribe to the chat stream only"
+                        + " (cannot send, cannot call any request). Off by default - the public chat becomes"
+                        + " readable by anyone who knows the port.");
+        chatGuestMax = configuration.getInt("guestMax", Categories.chat, Defaults.chatGuestMax, 0, 32,
+                "Max simultaneous guest connections. Keep it well below the 32-connection cap so guests never"
+                        + " crowd out authenticated users.");
         chatJoinLeave = configuration.getBoolean("joinLeave", Categories.chat, Defaults.chatJoinLeave,
                 "Forward player join/leave notices to the App chat stream (never broadcast into game chat).");
         chatAchievements = configuration.getBoolean("achievements", Categories.chat, Defaults.chatAchievements,

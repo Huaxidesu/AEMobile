@@ -2,6 +2,7 @@ package dev.youtiao.aemobile.net;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.youtiao.aemobile.AEMobile;
+import dev.youtiao.aemobile.Config;
 import dev.youtiao.aemobile.Tags;
 import dev.youtiao.aemobile.compat.GtnChatCompat;
 
@@ -39,6 +40,16 @@ final class TcpConnection implements Runnable {
     private static final int OUTBOX_CAPACITY = 512;
     /** 鉴权失败几次后断开 */
     private static final int MAX_AUTH_FAILS = 5;
+    /**
+     * 游客连接的 token 占位符。
+     *
+     * <p>游客没有密码，但下游（请求/订阅/推送）到处都在判 {@code token == null}，
+     * 所以给它一个**永远不会和真 token 撞车**的哨兵值，再单独用 {@link #guest} 拦权限。
+     * 真 token 是 26 位随机字符，不可能出现 NUL 字符。
+     */
+    private static final String GUEST_TOKEN = "\0guest";
+    /** 当前在线游客数（总连接上限 32，游客要单独配额，不能挤掉正式用户） */
+    private static final AtomicInteger GUEST_CONNS = new AtomicInteger();
 
     private final TcpServer server;
     private final Socket socket;
@@ -52,6 +63,8 @@ final class TcpConnection implements Runnable {
     private final AtomicInteger streamSeq = new AtomicInteger();
 
     private volatile boolean closed;
+    /** 这条连接是游客：免绑定码、只能收聊天、不能发也不能调请求 */
+    private volatile boolean guest;
     private volatile String token;
     private volatile String nonce;
     private volatile long lastSeen = System.currentTimeMillis();
@@ -182,6 +195,9 @@ final class TcpConnection implements Runnable {
         // App 据此决定要不要显示队伍·服务器·世界标签、要不要给「标签常驻」这个样式 ——
         // 没装的服上那些 UI 直接不出现，而不是留着点了没反应。老 App 忽略这个字段。
         m.put("caps", GtnChatCompat.caps());
+        // 本服开没开「游客只读聊天」。App 的首次配置页据此决定要不要给「仅使用聊天功能」这个入口
+        // （老服务端没有这个字段，App 按「不支持」处理）
+        m.put("guest", Config.chatGuest);
         sendFrame(Protocol.T_HELLO_ACK, m);
     }
 
@@ -201,6 +217,26 @@ final class TcpConnection implements Runnable {
         }
 
         JsonNode n = Json.read(frame.payload);
+
+        // 游客：没有 kid/ts/sig，只声明 {guest:true}。服务端没开就明确拒绝，
+        // 开了也只给「读聊天」这一项权限（见 onRequest / onSubscribe）。
+        if (Json.boolOf(n, "guest", false)) {
+            if (!Config.chatGuest) {
+                sendAuthFail("GUEST_DISABLED", System.currentTimeMillis() / 1000L);
+                return;
+            }
+            if (GUEST_CONNS.get() >= Config.chatGuestMax) {
+                sendAuthFail("GUEST_FULL", System.currentTimeMillis() / 1000L);
+                return;
+            }
+            GUEST_CONNS.incrementAndGet();
+            guest = true;
+            token = GUEST_TOKEN;
+            sendFrame(Protocol.T_AUTH_OK, null);
+            AEMobile.info("[AEMobile] 游客连接（只读聊天）：" + ip);
+            return;
+        }
+
         String kid = Json.strOf(n, "kid", "");
         String sig = Json.strOf(n, "sig", "");
         long ts = Json.longOf(n, "ts", 0L);
@@ -258,6 +294,11 @@ final class TcpConnection implements Runnable {
 
         if (token == null) {
             sendRes(id, false, null, "AUTH_REQUIRED", false);
+            return;
+        }
+        if (guest) {
+            // 游客只能读聊天：发消息、查物品、点歌、TPS 全部挡在这里
+            sendRes(id, false, null, "GUEST_READONLY", false);
             return;
         }
         if (!AuthTokens.isRegistered(token)) {
@@ -319,7 +360,11 @@ final class TcpConnection implements Runnable {
             sendRes(id, false, null, "AUTH_REQUIRED", false);
             return;
         }
-        if (!AuthTokens.isRegistered(token)) {
+        if (guest && !"chat".equals(op)) {
+            sendRes(id, false, null, "GUEST_READONLY", false);
+            return;
+        }
+        if (!guest && !AuthTokens.isRegistered(token)) {
             close("token-revoked");
             return;
         }
@@ -389,7 +434,7 @@ final class TcpConnection implements Runnable {
     /** 由定时器调用：把到期的订阅推出去 */
     void pushDue() {
         if (closed || token == null || subs.isEmpty()) return;
-        if (!AuthTokens.isRegistered(token)) {
+        if (!guest && !AuthTokens.isRegistered(token)) {
             close("token-revoked");
             return;
         }
@@ -505,6 +550,10 @@ final class TcpConnection implements Runnable {
                 if ("chat".equals(sub.op)) ChatHub.removeSubscriber();
             }
             subs.clear();
+            if (guest) {
+                guest = false;
+                GUEST_CONNS.decrementAndGet();
+            }
             server.remove(this);
             AEMobile.debug("[AEMobile] TCP 断开 " + ip + " (" + reason + ")");
         }
