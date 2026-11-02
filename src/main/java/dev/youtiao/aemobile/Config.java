@@ -118,8 +118,9 @@ public class Config {
                 "Shared secret between this mod and AEMobileBridge.");
         bridgeServerName = configuration.getString("server-name", Categories.bridge, Defaults.bridgeServerName,
                 "Name of this backend in the proxy config (the one used by /server).\n"
-                        + "Used to tag the ServerUtilities tab header/footer reported to AEMobileBridge.\n"
-                        + "Leave empty for a single-backend setup: the reported text then applies to every backend.");
+                        + "Leave this EMPTY in almost every case: AEMobile reports this server's port and\n"
+                        + "AEMobileBridge resolves the backend name by itself. Only fill it in when the\n"
+                        + "proxy reaches this backend on a different port than server.properties says.");
         musicPrefixes = configuration.getStringList("prefixes", Categories.music, Defaults.musicPrefixes,
                 "AllMusic chat prefixes to recognise (one per line), e.g. [AllMusic3] or [肥猫电台].");
         musicPublicMarkers = configuration.getStringList("publicMarkers", Categories.music, Defaults.musicPublicMarkers,

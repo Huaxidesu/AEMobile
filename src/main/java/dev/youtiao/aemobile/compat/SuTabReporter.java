@@ -59,17 +59,33 @@ public final class SuTabReporter {
         // 内容没变就不重复发：玩家每次登录都会触发，但 Su 配置通常一整天都不改
         if (h.equals(lastHeader) && f.equals(lastFooter)) return;
 
-        boolean ok = ProxyBridge.pushTabSource(Config.bridgeServerName, h, f);
+        int port = serverPort();
+        boolean ok = ProxyBridge.pushTabSource(Config.bridgeServerName, port, h, f);
         if (ok) {
             lastHeader = h;
             lastFooter = f;
             AEMobile.info("[AEMobile] 已把 ServerUtilities 的 TAB 文案上报给代理（server="
-                    + (Config.bridgeServerName.isEmpty() ? "*" : Config.bridgeServerName)
+                    + (Config.bridgeServerName.isEmpty() ? "自动/端口 " + port : Config.bridgeServerName)
                     + ", header " + h.length() + " 字符, footer " + f.length() + " 字符）");
         } else if (!failureLogged) {
             failureLogged = true;
             AEMobile.warn("[AEMobile] TAB 文案上报失败（代理没开 tab_source 或版本低于 1.1.1），"
                     + "代理会退回 config.yml 里的文案");
+        }
+    }
+
+    /**
+     * 本服监听端口，给代理反查 BC 子服名用。
+     *
+     * <p>有了它，每台后端都不用在 {@code AEMobile.cfg} 里手填子服名：代理拿端口去
+     * {@code servers:} 里对号即可。取不到就返回 0，代理会退回通配 key（对所有子服生效）。
+     */
+    private static int serverPort() {
+        try {
+            net.minecraft.server.MinecraftServer srv = net.minecraft.server.MinecraftServer.getServer();
+            return srv == null ? 0 : srv.getServerPort();
+        } catch (Throwable t) {
+            return 0;
         }
     }
 

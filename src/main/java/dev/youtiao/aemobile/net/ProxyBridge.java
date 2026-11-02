@@ -49,10 +49,11 @@ public final class ProxyBridge {
      * <p>这样 TAB 文案的唯一来源是服务端的 {@code serverutilities.cfg}，代理插件里不用再抄一份；
      * 调用方应当放到后台线程（本方法会同步等代理回一行 JSON）。
      *
-     * @param server BC 里的子服名；空串表示「对所有子服生效」
+     * @param server BC 里的子服名；留空即可，代理会用 {@code port} 自动反查，查不到才落到通配
+     * @param port 本服 {@code server.properties} 的 server-port，给代理反查子服名用；0 表示不提供
      * @param header 为 null 表示不动这一侧
      */
-    public static boolean pushTabSource(String server, String header, String footer) {
+    public static boolean pushTabSource(String server, int port, String header, String footer) {
         if (!Config.bridgeEnabled) return false;
         if (header == null && footer == null) return false;
 
@@ -60,6 +61,7 @@ public final class ProxyBridge {
         req.put("op", "tab_source");
         req.put("secret", Config.bridgeSecret);
         req.put("server", server == null ? "" : server);
+        if (port > 0) req.put("port", port);
         if (header != null) req.put("header", header);
         if (footer != null) req.put("footer", footer);
 
