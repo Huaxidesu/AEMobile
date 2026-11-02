@@ -305,7 +305,8 @@ final class TcpConnection implements Runnable {
             sendRes(id, false, null, "GUEST_READONLY", false);
             return;
         }
-        if (!AuthTokens.isRegistered(token)) {
+        // 游客的 token 是哨兵值、不在注册表里，不能按「被吊销」处理
+        if (!guest && !AuthTokens.isRegistered(token)) {
             close("token-revoked");
             return;
         }
