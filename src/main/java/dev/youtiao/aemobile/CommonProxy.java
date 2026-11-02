@@ -96,6 +96,9 @@ public class CommonProxy {
             // 玩家加入/退出（只进 App 聊天流）
             cpw.mods.fml.common.FMLCommonHandler.instance().bus()
                     .register(new dev.youtiao.aemobile.net.ChatHub.PlayerEvents());
+            // 把 ServerUtilities 的 TAB 文案上报给代理（代理侧 tab_source，1.1.1+）
+            cpw.mods.fml.common.FMLCommonHandler.instance().bus()
+                    .register(new dev.youtiao.aemobile.compat.SuTabReporter.Listener());
             // debug 命令桥（默认关闭）：把命令队列交给主线程执行，只能在 tick 里做
             cpw.mods.fml.common.FMLCommonHandler.instance().bus()
                     .register(new dev.youtiao.aemobile.debug.DebugBridge.ServerTickHandler());

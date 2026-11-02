@@ -43,6 +43,52 @@ public final class ProxyBridge {
         }
     }
 
+    /**
+     * 把子服 ServerUtilities 的 TAB 页眉页脚上报给代理，代理按 {@code server} 缓存后下发。
+     *
+     * <p>这样 TAB 文案的唯一来源是服务端的 {@code serverutilities.cfg}，代理插件里不用再抄一份；
+     * 调用方应当放到后台线程（本方法会同步等代理回一行 JSON）。
+     *
+     * @param server BC 里的子服名；空串表示「对所有子服生效」
+     * @param header 为 null 表示不动这一侧
+     */
+    public static boolean pushTabSource(String server, String header, String footer) {
+        if (!Config.bridgeEnabled) return false;
+        if (header == null && footer == null) return false;
+
+        Map<String, Object> req = new LinkedHashMap<String, Object>();
+        req.put("op", "tab_source");
+        req.put("secret", Config.bridgeSecret);
+        req.put("server", server == null ? "" : server);
+        if (header != null) req.put("header", header);
+        if (footer != null) req.put("footer", footer);
+
+        Socket socket = new Socket();
+        try {
+            socket.connect(new InetSocketAddress(Config.bridgeHost, Config.bridgePort), 2000);
+            socket.setSoTimeout(4000);
+            PrintWriter out = new PrintWriter(
+                    new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
+            out.println(Json.write(req));
+            out.flush();
+
+            BufferedReader in = new BufferedReader(
+                    new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            String line = in.readLine();
+            if (line == null) return false;
+            JsonNode node = Json.read(line);
+            return node != null && node.path("ok").asBoolean(false);
+        } catch (Throwable t) {
+            AEMobile.debug("[AEMobile] tab_source 上报失败：" + t);
+            return false;
+        } finally {
+            try {
+                socket.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     private ProxyBridge() {
     }
 

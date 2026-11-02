@@ -26,6 +26,8 @@ public class Config {
         public static final String bridgeHost = "127.0.0.1";
         public static final int bridgePort = 44445;
         public static final String bridgeSecret = "aemobile-bridge";
+        /** BC 里的子服名（/server 用的那个）；留空则上报的 tab 文案对所有子服生效。 */
+        public static final String bridgeServerName = "";
     }
 
     private static class Categories {
@@ -71,6 +73,7 @@ public class Config {
     public static String bridgeHost = Defaults.bridgeHost;
     public static int bridgePort = Defaults.bridgePort;
     public static String bridgeSecret = Defaults.bridgeSecret;
+    public static String bridgeServerName = Defaults.bridgeServerName;
     public static String[] musicPrefixes = Defaults.musicPrefixes;
     /** 只有带这些标记的 AllMusic 消息才进公共聊天（默认「正在播放」） */
     public static String[] musicPublicMarkers = Defaults.musicPublicMarkers;
@@ -113,6 +116,10 @@ public class Config {
                 "TCP port of AEMobileBridge on the proxy.");
         bridgeSecret = configuration.getString("secret", Categories.bridge, Defaults.bridgeSecret,
                 "Shared secret between this mod and AEMobileBridge.");
+        bridgeServerName = configuration.getString("server-name", Categories.bridge, Defaults.bridgeServerName,
+                "Name of this backend in the proxy config (the one used by /server).\n"
+                        + "Used to tag the ServerUtilities tab header/footer reported to AEMobileBridge.\n"
+                        + "Leave empty for a single-backend setup: the reported text then applies to every backend.");
         musicPrefixes = configuration.getStringList("prefixes", Categories.music, Defaults.musicPrefixes,
                 "AllMusic chat prefixes to recognise (one per line), e.g. [AllMusic3] or [肥猫电台].");
         musicPublicMarkers = configuration.getStringList("publicMarkers", Categories.music, Defaults.musicPublicMarkers,

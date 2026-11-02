@@ -35,7 +35,10 @@ public final class TabOverlayHook {
 
     private static boolean registered;
     private static boolean busy;
-    private static boolean rendererMissing;
+    private static boolean resolved;
+    private static volatile Object renderInstance;
+    private static volatile java.lang.reflect.Method renderMethod;
+    private static long lastWarnAt;
 
     private static int preHits;
     private static int fallbackDraws;
@@ -52,16 +55,32 @@ public final class TabOverlayHook {
         LOG.info("[TabHook] registered (renderer={})", RENDERER);
     }
 
-    /** TAB 是否被按住。lwjgl3ify 下 KeyBinding 的 pressed 有时不刷新，所以两个判断取或。 */
+    /** TAB 是否被按住。lwjgl3ify 下 KeyBinding 的 pressed 有时不刷新，所以再从按键码查一次。 */
     private static boolean holdingTab() {
         try {
             KeyBinding kb = Minecraft.getMinecraft().gameSettings.keyBindPlayerList;
-            if (kb != null && kb.getIsKeyPressed()) {
-                return true;
-            }
-            return org.lwjgl.input.Keyboard.isKeyDown(15);
+            if (kb == null) return false;
+            if (kb.getIsKeyPressed()) return true;
+            // 不再硬编码 15：玩家改过键位时照样能识别
+            int code = kb.getKeyCode();
+            return code >= 0 && org.lwjgl.input.Keyboard.isKeyDown(code);
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    /** 反射只解析一次：按住 TAB 时每帧都会走这里，别每帧做 Class.forName/getMethod。 */
+    private static synchronized void resolveRenderer() {
+        if (resolved) return;
+        resolved = true;
+        try {
+            Class<?> cls = Class.forName(RENDERER);
+            renderInstance = cls.getField("INSTANCE").get(null);
+            renderMethod = cls.getMethod("render", ScaledResolution.class);
+        } catch (ClassNotFoundException e) {
+            LOG.warn("[TabHook] {} 不存在，跳过现代 TAB", RENDERER);
+        } catch (Throwable t) {
+            LOG.warn("[TabHook] 解析渲染器失败: {}", t.toString());
         }
     }
 
@@ -69,18 +88,20 @@ public final class TabOverlayHook {
         if (busy || res == null) {
             return;
         }
+        resolveRenderer();
+        if (renderMethod == null) {
+            return;
+        }
         busy = true;
         try {
-            Class<?> cls = Class.forName(RENDERER);
-            Object inst = cls.getField("INSTANCE").get(null);
-            cls.getMethod("render", ScaledResolution.class).invoke(inst, res);
-        } catch (ClassNotFoundException e) {
-            if (!rendererMissing) {
-                rendererMissing = true;
-                LOG.warn("[TabHook] {} 不存在，跳过现代 TAB", RENDERER);
-            }
+            renderMethod.invoke(renderInstance, res);
         } catch (Throwable t) {
-            LOG.warn("[TabHook] render 失败: {}", t.toString());
+            // 渲染每帧都跑，失败时限流打日志，别把 log 刷爆
+            long now = System.currentTimeMillis();
+            if (now - lastWarnAt > 5000L) {
+                lastWarnAt = now;
+                LOG.warn("[TabHook] render 失败: {}", t.toString());
+            }
         } finally {
             busy = false;
         }
