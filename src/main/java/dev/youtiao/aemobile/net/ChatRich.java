@@ -152,7 +152,7 @@ final class ChatRich {
             String left = own;
             if (isNeiItem(style)) {
                 // 只发英文名和 tooltip：服务端是 en_US，翻译交给 App 本地做
-                addAtt(ctx, new Att("item", stripBrackets(own), hoverText(style.hover), null));
+                addAtt(ctx, new Att("item", stripCodes(stripBrackets(own)), hoverText(style.hover), null));
                 left = null;
             } else if (left.contains(QUEST_MARKER)) {
                 Matcher m = QUEST_ID.matcher(left);
@@ -205,7 +205,7 @@ final class ChatRich {
             if (text == null || text.isEmpty()) continue;
 
             if (isNeiItem(cs)) {
-                addAtt(ctx, new Att("item", stripBrackets(text), hoverText(cs.hover), null));
+                addAtt(ctx, new Att("item", stripCodes(stripBrackets(text)), hoverText(cs.hover), null));
                 nei = true;
                 continue;
             }
@@ -234,10 +234,31 @@ final class ChatRich {
         return t;
     }
 
+    /**
+     * 去掉 {@code §} 颜色码。
+     *
+     * <p>NEI 分享用的是 {@code ItemStack.getChatComponent()}，里面是**带颜色码的显示名**，
+     * 而 {@code getUnformattedText()} 只摊平组件树、不剥码。颜色码留在附件里，手机端会原样
+     * 打出来（{@code §l§d奥术裂隙}），也查不到本地字典（字典的键是剥过码的纯文本）。
+     */
+    private static String stripCodes(String s) {
+        if (s == null || s.isEmpty()) return s;
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\u00a7' && i + 1 < s.length()) {
+                i++;
+                continue;
+            }
+            sb.append(c);
+        }
+        return sb.toString().trim();
+    }
+
     private static String hoverText(HoverEvent hover) {
         if (hover == null || hover.getValue() == null) return "";
         String s = hover.getValue().getUnformattedText();
-        return s == null ? "" : s.replace('\u00a7', ' ').trim();
+        return s == null ? "" : stripCodes(s);
     }
 
     private static void addAtt(Ctx ctx, Att att) {
