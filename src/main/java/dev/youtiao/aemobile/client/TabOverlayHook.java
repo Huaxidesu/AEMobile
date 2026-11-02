@@ -33,6 +33,9 @@ public final class TabOverlayHook {
 
     private static final String RENDERER = "serverutils.client.tab.ModernTabRenderer";
 
+    /** NecroTempus 的 TAB 开关：public static 字段，其渲染逻辑每帧现读，改了立刻生效。 */
+    private static final String NECRO_CONFIG = "io.github.cruciblemc.necrotempus.NecroTempusConfig";
+
     private static boolean registered;
     private static boolean busy;
     private static boolean resolved;
@@ -52,7 +55,49 @@ public final class TabOverlayHook {
         }
         registered = true;
         MinecraftForge.EVENT_BUS.register(new TabOverlayHook());
+        disableCompetingTab();
         LOG.info("[TabHook] registered (renderer={})", RENDERER);
+    }
+
+    /**
+     * 关掉会跟 SU 抢 TAB 的模组开关（目前只知道 NecroTempus）。
+     *
+     * <p>为什么必须关：{@code NecroTempus} 的 {@code PlayerTabDisplayListener} 在
+     * {@code PLAYER_LIST} 的 Pre 里先 {@code setCanceled(true)}，**紧接着自己画一份 tab**。
+     * 本钩子为了让 SU 的渲染器跑起来会把这个 cancel 撤销（{@code setCanceled(false)}）再调
+     * SU 画一次 —— 于是两份 TAB 同时存在于屏幕上，就是玩家看到的"重叠"。
+     * 两边都画无法用事件区分，最干净的做法是让 SU 独占：它的文案来自服务器下发的
+     * {@code SU|TabHF}，而 Necro 的 tab 没有页眉页脚。
+     *
+     * <p>只在装了 SU 时才动它：没有 SU 的客户端，Necro 的 tab 是唯一实现，不该被关掉。
+     * 该字段是 {@code public static boolean}，Necro 的渲染每帧 {@code getstatic} 现读，
+     * 所以在 init 阶段改掉立即生效，不需要它重新注册监听器。
+     */
+    private static void disableCompetingTab() {
+        if (!suRendererPresent()) {
+            return;
+        }
+        try {
+            Class<?> cfg = Class.forName(NECRO_CONFIG);
+            java.lang.reflect.Field flag = cfg.getField("PlayerTabEnabled");
+            if (flag.getBoolean(null)) {
+                flag.setBoolean(null, false);
+                LOG.info("[TabHook] 检测到 NecroTempus 的 PlayerTab 已开启，已关闭以免与 SU 的现代 TAB 重叠");
+            }
+        } catch (ClassNotFoundException e) {
+            // 没装 NecroTempus，正常情况
+        } catch (Throwable t) {
+            LOG.warn("[TabHook] 关闭 NecroTempus 的 PlayerTab 失败: {}", t.toString());
+        }
+    }
+
+    private static boolean suRendererPresent() {
+        try {
+            Class.forName(RENDERER);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** TAB 是否被按住。lwjgl3ify 下 KeyBinding 的 pressed 有时不刷新，所以再从按键码查一次。 */
