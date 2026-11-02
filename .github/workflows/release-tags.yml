@@ -4,8 +4,8 @@
 # （浅克隆拿不到 tag，构建会直接抛 "This mod must be version controlled by Git"）。
 #
 # 原模板用的 marvinpinto/action-automatic-releases 早已归档，换成 softprops/action-gh-release；
-# 模板里的 ./gradlew setupCIWorkspace 与 ./gradlew publish 也去掉了 —— 这个项目是 ForgeGradle 1.2，
-# 没有 setupCIWorkspace 这个任务，GitHub Packages 对 1.7.10 整合包也没有意义。
+# 模板里的 ./gradlew publish（发 GitHub Packages）去掉了 —— 对 1.7.10 整合包没意义。
+# setupCIWorkspace 保留：ForgeGradle 1.2 靠它准备 binpatch 环境，跳过会在 :applyBinPatches 炸。
 name: Release
 
 on:
@@ -37,6 +37,11 @@ jobs:
       - name: Grant execute permission for gradlew
         # gradlew 只是转发到 gradlew.in 的包装脚本（仓库里没有前端子模块了），两个都要 +x
         run: chmod +x gradlew gradlew.in
+
+      # 必须先跑这个：ForgeGradle 1.2 要它下载并准备 minecraft/forge 的 binpatch 环境，
+      # 直接 build 会在 :applyBinPatches 报 CrashReport 的 checksum 不匹配。
+      - name: Setup workspace
+        run: ./gradlew setupCIWorkspace --no-daemon
 
       - name: Build
         run: ./gradlew build -x test --no-daemon
