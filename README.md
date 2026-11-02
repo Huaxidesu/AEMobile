@@ -33,6 +33,9 @@ mixin 分支被挡掉）时，才反射调用 `serverutils.client.tab.ModernTabR
 - 3.5.1 起，服务端还会把本服 `serverutilities.cfg` 的 `tab.headerText` / `tab.footerText`
   通过 `AEMobileBridge` 的 `tab_source` 上报给代理 —— 代理不用再抄一份文案，改 SU 配置即可，
   下一次有玩家登录时自动生效。没装 ServerUtilities 或没开 `[bridge]` 时该功能静默跳过。
+- 3.5.2 起上报会带上本服 `server.properties` 的 `server-port`，代理据此自动认出这是哪个子服
+  （如 25588 → `mgl`）；**`[bridge] server-name` 保持默认空即可**，只有代理连本服的端口和
+  `server.properties` 不一致时才需要手填。
 - 已知冲突：`BetterPingDisplay` 会取消该事件并整份重画原版 TAB，和 SU 的 `showPingNumber`
   功能重复，装了它页眉页脚就不显示，建议移除。
 - `NecroTempus` 的 PlayerTab 模块同样会接管 TAB，需要在 `config/NecroTempusConfig.cfg`
