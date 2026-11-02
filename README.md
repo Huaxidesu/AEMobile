@@ -38,8 +38,11 @@ mixin 分支被挡掉）时，才反射调用 `serverutils.client.tab.ModernTabR
   `server.properties` 不一致时才需要手填。
 - 已知冲突：`BetterPingDisplay` 会取消该事件并整份重画原版 TAB，和 SU 的 `showPingNumber`
   功能重复，装了它页眉页脚就不显示，建议移除。
-- `NecroTempus` 的 PlayerTab 模块同样会接管 TAB，需要在 `config/NecroTempusConfig.cfg`
-  里把 `"PlayerTab"` 的 `B:PlayerTab` 设为 `false`。
+- `NecroTempus` 的 PlayerTab 模块也会接管 TAB：它先取消 `PLAYER_LIST` 事件再自己画一份，
+  而本模组为了让 SU 的渲染器跑起来会撤销这次取消，结果两份 TAB 叠在一起。
+  **3.6.1 起只要装了 SU，就会在启动时自动把 NecroTempus 的 `PlayerTab` 关掉**
+  （日志：`检测到 NecroTempus 的 PlayerTab 已开启…`）；也可手动在
+  `config/NecroTempusConfig.cfg` 里设 `"PlayerTab"` 的 `B:PlayerTab=false`。
 
 ## 使用
 

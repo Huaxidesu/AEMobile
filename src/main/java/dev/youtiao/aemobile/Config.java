@@ -17,6 +17,7 @@ public class Config {
         public static final int chatPerMinute = 30;
         public static final int chatBroadcastPerTick = 5;
         public static final boolean chatGuest = false;
+        public static final boolean chatGuestSay = true;
         public static final int chatGuestMax = 8;
         public static final boolean chatJoinLeave = true;
         public static final boolean chatAchievements = true;
@@ -68,6 +69,11 @@ public class Config {
      * 默认关 —— 开了等于把公屏聊天公开给任何知道端口的人。
      */
     public static boolean chatGuest = Defaults.chatGuest;
+    /**
+     * 游客能不能发言：开着时游客可以像绑定用户一样收发公屏聊天（物品/合成功能仍然没有）。
+     * 关掉就退回「只读游客」。仅在 {@link #chatGuest} 开启时有意义。
+     */
+    public static boolean chatGuestSay = Defaults.chatGuestSay;
     /** 同时最多允许几条游客连接（总连接上限只有 32，游客不能把正式用户挤掉） */
     public static int chatGuestMax = Defaults.chatGuestMax;
 
@@ -115,6 +121,10 @@ public class Config {
                 "Allow read-only guest connections WITHOUT a token: they can subscribe to the chat stream only"
                         + " (cannot send, cannot call any request). Off by default - the public chat becomes"
                         + " readable by anyone who knows the port.");
+        chatGuestSay = configuration.getBoolean("guestSay", Categories.chat, Defaults.chatGuestSay,
+                "Can guest connections SEND chat messages? When off, guests are read-only."
+                        + " Only meaningful if guest=true. Guest messages appear as [AEMobile][name] in game chat,"
+                        + " same as bound users; rate limits still apply per connection.");
         chatGuestMax = configuration.getInt("guestMax", Categories.chat, Defaults.chatGuestMax, 0, 32,
                 "Max simultaneous guest connections. Keep it well below the 32-connection cap so guests never"
                         + " crowd out authenticated users.");

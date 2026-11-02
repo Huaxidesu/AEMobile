@@ -47,7 +47,9 @@ final class TcpConnection implements Runnable {
      * 所以给它一个**永远不会和真 token 撞车**的哨兵值，再单独用 {@link #guest} 拦权限。
      * 真 token 是 26 位随机字符，不可能出现 NUL 字符。
      */
-    private static final String GUEST_TOKEN = "\0guest";
+    private static final String GUEST_TOKEN_PREFIX = "\0guest:";
+    /** 游客 token 的序号段：token 是聊天限流的键，每条连接要不一样，否则一个刷屏的游客会吃掉所有人的配额 */
+    private static final AtomicInteger GUEST_SEQ = new AtomicInteger();
     /** 当前在线游客数（总连接上限 32，游客要单独配额，不能挤掉正式用户） */
     private static final AtomicInteger GUEST_CONNS = new AtomicInteger();
 
@@ -198,6 +200,8 @@ final class TcpConnection implements Runnable {
         // 本服开没开「游客只读聊天」。App 的首次配置页据此决定要不要给「仅使用聊天功能」这个入口
         // （老服务端没有这个字段，App 按「不支持」处理）
         m.put("guest", Config.chatGuest);
+        // 游客能不能发言（[chat] guestSay）。老服务端没这个字段，App 按「只读游客」处理
+        m.put("guestsay", Config.chatGuestSay);
         sendFrame(Protocol.T_HELLO_ACK, m);
     }
 
@@ -231,7 +235,7 @@ final class TcpConnection implements Runnable {
             }
             GUEST_CONNS.incrementAndGet();
             guest = true;
-            token = GUEST_TOKEN;
+            token = GUEST_TOKEN_PREFIX + ip + ":" + GUEST_SEQ.incrementAndGet();
             sendFrame(Protocol.T_AUTH_OK, null);
             AEMobile.info("[AEMobile] 游客连接（只读聊天）：" + ip);
             return;
@@ -296,8 +300,8 @@ final class TcpConnection implements Runnable {
             sendRes(id, false, null, "AUTH_REQUIRED", false);
             return;
         }
-        if (guest) {
-            // 游客只能读聊天：发消息、查物品、点歌、TPS 全部挡在这里
+        if (guest && !("chatSend".equals(op) && Config.chatGuestSay)) {
+            // 游客只能聊公屏（guestSay 开着还能发）：查物品、点歌、TPS 全部挡在这里
             sendRes(id, false, null, "GUEST_READONLY", false);
             return;
         }
